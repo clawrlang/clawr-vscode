@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import { TokenStream } from './lexer'
 import { Parser } from './parser'
 import type {
+    ASTExpression,
     ASTDataDeclaration,
+    ASTFunctionBody,
     ASTFunctionDeclaration,
     ASTObjectDeclaration,
     ASTProgram,
@@ -710,6 +712,17 @@ async function provideClawrDefinition(
     const program = parseProgram(source, document.uri.fsPath)
     if (!program) return null
 
+    const localScoped = findLocalScopedDefinition(
+        program,
+        symbol,
+        document.uri.fsPath,
+        wordRange.start.line + 1,
+        wordRange.start.character + 1,
+    )
+    if (localScoped) {
+        return localScoped
+    }
+
     const local = findTopLevelDeclaration(program.body, symbol)
     if (local) {
         return declarationToLocation(document.uri.fsPath, local)
@@ -804,5 +817,390 @@ function declarationToLocation(
         line,
         nameChar + declaration.name.length,
     )
+    return new vscode.Location(vscode.Uri.file(filePath), range)
+}
+
+type ScopedDecl = {
+    name: string
+    line: number
+    column: number
+}
+
+function findLocalScopedDefinition(
+    program: ASTProgram,
+    symbol: string,
+    filePath: string,
+    targetLine: number,
+    targetColumn: number,
+): vscode.Location | null {
+    for (const context of collectFunctionContexts(program)) {
+        const found = resolveInFunctionScope(
+            context.func,
+            symbol,
+            filePath,
+            targetLine,
+            targetColumn,
+            program.body,
+            context.owner,
+        )
+        if (found) return found
+    }
+    return null
+}
+
+type FunctionContext = {
+    func: ASTFunctionDeclaration
+    owner?: ASTObjectDeclaration | ASTServiceDeclaration
+}
+
+function collectFunctionContexts(program: ASTProgram): FunctionContext[] {
+    const contexts: FunctionContext[] = []
+
+    for (const stmt of program.body) {
+        if (stmt.kind === 'func-decl') {
+            contexts.push({ func: stmt })
+            continue
+        }
+
+        if (stmt.kind === 'object-decl' || stmt.kind === 'service-decl') {
+            for (const section of stmt.sections) {
+                if (section.kind === 'methods' || section.kind === 'mutating') {
+                    for (const method of section.items) {
+                        contexts.push({ func: method, owner: stmt })
+                    }
+                }
+            }
+        }
+    }
+
+    return contexts
+}
+
+function resolveInFunctionScope(
+    func: ASTFunctionDeclaration,
+    symbol: string,
+    filePath: string,
+    targetLine: number,
+    targetColumn: number,
+    topLevelBody: ASTStatement[],
+    owner?: ASTObjectDeclaration | ASTServiceDeclaration,
+): vscode.Location | null {
+    const scopes: Array<Map<string, ScopedDecl>> = [new Map()]
+    const declare = (name: string, line: number, column: number): void => {
+        scopes[scopes.length - 1].set(name, { name, line, column })
+    }
+    const lookup = (name: string): ScopedDecl | null => {
+        for (let i = scopes.length - 1; i >= 0; i--) {
+            const hit = scopes[i].get(name)
+            if (hit) return hit
+        }
+        return null
+    }
+    const withScope = (
+        work: () => vscode.Location | null,
+    ): vscode.Location | null => {
+        scopes.push(new Map())
+        try {
+            return work()
+        } finally {
+            scopes.pop()
+        }
+    }
+
+    for (const param of func.parameters) {
+        declare(param.name, param.position.line, param.position.column)
+    }
+
+    if (owner) {
+        declare('self', owner.position.line, owner.position.column)
+        if (owner.kind === 'object-decl' && owner.supertype) {
+            declare('super', owner.position.line, owner.position.column)
+        }
+    }
+
+    const parameterTarget = resolveParameterDefinitionLocation(
+        filePath,
+        func,
+        symbol,
+        targetLine,
+        targetColumn,
+    )
+    if (parameterTarget) {
+        return parameterTarget
+    }
+
+    const resolveExpression = (expr: ASTExpression): vscode.Location | null => {
+        switch (expr.kind) {
+            case 'identifier': {
+                if (
+                    expr.name === symbol &&
+                    expr.position.line === targetLine &&
+                    expr.position.column === targetColumn
+                ) {
+                    if (symbol === 'self' && owner) {
+                        return declarationToLocation(filePath, owner)
+                    }
+
+                    if (
+                        symbol === 'super' &&
+                        owner?.kind === 'object-decl' &&
+                        owner.supertype
+                    ) {
+                        const superDecl = findTopLevelDeclaration(
+                            topLevelBody,
+                            owner.supertype,
+                        )
+                        if (superDecl) {
+                            return declarationToLocation(filePath, superDecl)
+                        }
+                        return declarationToLocation(filePath, owner)
+                    }
+
+                    const decl = lookup(symbol)
+                    if (!decl) return null
+                    return nameToLocation(
+                        filePath,
+                        decl.name,
+                        decl.line,
+                        decl.column,
+                    )
+                }
+                return null
+            }
+            case 'binary':
+                return (
+                    resolveExpression(expr.left) ??
+                    resolveExpression(expr.right)
+                )
+            case 'call': {
+                const callee = resolveExpression(expr.callee)
+                if (callee) return callee
+                for (const arg of expr.arguments) {
+                    const match = resolveExpression(arg.value)
+                    if (match) return match
+                }
+                return null
+            }
+            case 'copy':
+                return resolveExpression(expr.value)
+            case 'array-literal':
+                for (const element of expr.elements) {
+                    const match = resolveExpression(element)
+                    if (match) return match
+                }
+                return null
+            case 'data-literal':
+                for (const value of Object.values(expr.fields)) {
+                    const match = resolveExpression(value)
+                    if (match) return match
+                }
+                return null
+            case 'when': {
+                const subject = resolveExpression(expr.subject)
+                if (subject) return subject
+                for (const branch of expr.branches) {
+                    if (branch.pattern.kind === 'value-pattern') {
+                        const patternMatch = resolveExpression(
+                            branch.pattern.value,
+                        )
+                        if (patternMatch) return patternMatch
+                    }
+                    const valueMatch = resolveExpression(branch.value)
+                    if (valueMatch) return valueMatch
+                }
+                return null
+            }
+            default:
+                return null
+        }
+    }
+
+    const resolveStatements = (
+        statements: ASTStatement[],
+    ): vscode.Location | null => {
+        for (const stmt of statements) {
+            switch (stmt.kind) {
+                case 'var-decl': {
+                    const inValue = resolveExpression(stmt.value)
+                    if (inValue) return inValue
+                    declare(stmt.name, stmt.position.line, stmt.position.column)
+                    break
+                }
+                case 'assign': {
+                    const inTarget = resolveExpression(stmt.target)
+                    if (inTarget) return inTarget
+                    const inValue = resolveExpression(stmt.value)
+                    if (inValue) return inValue
+                    break
+                }
+                case 'print': {
+                    const inValue = resolveExpression(stmt.value)
+                    if (inValue) return inValue
+                    break
+                }
+                case 'return': {
+                    if (stmt.value) {
+                        const inValue = resolveExpression(stmt.value)
+                        if (inValue) return inValue
+                    }
+                    break
+                }
+                case 'if': {
+                    const inCondition = resolveExpression(stmt.condition)
+                    if (inCondition) return inCondition
+                    const inThen = withScope(() =>
+                        resolveStatements(stmt.thenBranch),
+                    )
+                    if (inThen) return inThen
+                    if (stmt.elseBranch) {
+                        const inElse = withScope(() =>
+                            resolveStatements(stmt.elseBranch!),
+                        )
+                        if (inElse) return inElse
+                    }
+                    break
+                }
+                case 'while': {
+                    const inCondition = resolveExpression(stmt.condition)
+                    if (inCondition) return inCondition
+                    const inBody = withScope(() => resolveStatements(stmt.body))
+                    if (inBody) return inBody
+                    break
+                }
+                case 'for-in': {
+                    const inIterable = resolveExpression(stmt.iterable)
+                    if (inIterable) return inIterable
+                    const inBody = withScope(() => {
+                        declare(
+                            stmt.loopVar,
+                            stmt.position.line,
+                            stmt.position.column,
+                        )
+                        return resolveStatements(stmt.body)
+                    })
+                    if (inBody) return inBody
+                    break
+                }
+                default:
+                    break
+            }
+        }
+
+        return null
+    }
+
+    return resolveFunctionBody(func.body, resolveExpression, resolveStatements)
+}
+
+function resolveParameterDefinitionLocation(
+    filePath: string,
+    func: ASTFunctionDeclaration,
+    symbol: string,
+    targetLine: number,
+    targetColumn: number,
+): vscode.Location | null {
+    for (const param of func.parameters) {
+        if (param.position.line !== targetLine) continue
+
+        const label = param.label
+        const lineText = tryReadLine(filePath, targetLine)
+
+        if (label && label === symbol) {
+            const labelStart = Math.max(1, param.position.column)
+            const labelEnd = labelStart + label.length - 1
+            if (targetColumn >= labelStart && targetColumn <= labelEnd) {
+                const internalCol =
+                    findInternalParameterColumn(lineText, label, param.name) ??
+                    labelStart
+                return nameToLocation(
+                    filePath,
+                    param.name,
+                    targetLine,
+                    internalCol,
+                )
+            }
+        }
+
+        if (param.name === symbol) {
+            const nameCol =
+                label && lineText
+                    ? findInternalParameterColumn(lineText, label, param.name)
+                    : param.position.column
+
+            const start = Math.max(1, nameCol ?? param.position.column)
+            const end = start + param.name.length - 1
+            if (targetColumn >= start && targetColumn <= end) {
+                return nameToLocation(filePath, param.name, targetLine, start)
+            }
+        }
+    }
+
+    return null
+}
+
+function tryReadLine(filePath: string, line1Based: number): string {
+    try {
+        const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/)
+        return lines[Math.max(0, line1Based - 1)] ?? ''
+    } catch {
+        return ''
+    }
+}
+
+function findInternalParameterColumn(
+    lineText: string,
+    label: string,
+    internalName: string,
+): number | null {
+    if (!lineText) return null
+    const re = new RegExp(
+        `\\b${escapeRegExp(label)}\\s+${escapeRegExp(internalName)}\\b`,
+    )
+    const match = re.exec(lineText)
+    if (!match || match.index < 0) return null
+    const offset = match[0].indexOf(internalName)
+    if (offset < 0) return null
+    return match.index + offset + 1
+}
+
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function resolveFunctionBody(
+    body: ASTFunctionBody,
+    resolveExpression: (expr: ASTExpression) => vscode.Location | null,
+    resolveStatements: (statements: ASTStatement[]) => vscode.Location | null,
+): vscode.Location | null {
+    if (body.kind === 'expression') {
+        return resolveExpression(body.value)
+    }
+    return resolveStatements(body.statements)
+}
+
+function nameToLocation(
+    filePath: string,
+    name: string,
+    line1Based: number,
+    column1Based: number,
+): vscode.Location {
+    const line = Math.max(0, line1Based - 1)
+    const fallbackChar = Math.max(0, column1Based - 1)
+    let nameChar = fallbackChar
+
+    try {
+        const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/)
+        const lineText = lines[line] ?? ''
+        const fromColumn = lineText.indexOf(name, fallbackChar)
+        nameChar =
+            fromColumn >= 0 ? fromColumn : Math.max(0, lineText.indexOf(name))
+        if (nameChar < 0) {
+            nameChar = fallbackChar
+        }
+    } catch {
+        nameChar = fallbackChar
+    }
+
+    const range = new vscode.Range(line, nameChar, line, nameChar + name.length)
     return new vscode.Location(vscode.Uri.file(filePath), range)
 }
