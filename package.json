@@ -36,23 +36,6 @@
         "path": "./syntaxes/clawr.tmLanguage.json"
       }
     ],
-    "semanticTokenTypes": [
-      {
-        "id": "keyword",
-        "superType": "keyword",
-        "description": "Clawr keywords"
-      },
-      {
-        "id": "number",
-        "superType": "number",
-        "description": "Numeric literals"
-      },
-      {
-        "id": "operator",
-        "superType": "operator",
-        "description": "Operators and punctuation"
-      }
-    ],
     "configuration": {
       "title": "Clawr",
       "properties": {
@@ -61,10 +44,20 @@
           "default": false,
           "description": "Enable lexer-based semantic tokens. Can impact editor responsiveness on large or frequently changing files."
         },
+        "clawr.semanticTokens.trace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log semantic token timing/debug information to the Clawr output channel."
+        },
         "clawr.diagnostics.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable parser diagnostics while editing Clawr files."
+        },
+        "clawr.diagnostics.trace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log diagnostics timing/debug information to the Clawr output channel."
         },
         "clawr.diagnostics.maxLines": {
           "type": "number",
@@ -78,6 +71,14 @@
       {
         "command": "clawr.hello",
         "title": "Clawr: Hello"
+      },
+      {
+        "command": "clawr.showSemanticTokenStats",
+        "title": "Clawr: Show Semantic Token Stats"
+      },
+      {
+        "command": "clawr.showDiagnosticsStats",
+        "title": "Clawr: Show Diagnostics Stats"
       }
     ]
   },
