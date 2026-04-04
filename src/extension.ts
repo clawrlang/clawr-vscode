@@ -16,6 +16,11 @@ import type {
 } from './ast'
 import { resolveImportPath } from './semantic-analyzer/module-graph'
 import { collectTopLevelBoundIdentifierPositions } from './references/top-level-bound-positions'
+import {
+    classifyClawrToken,
+    createSemanticClassifierState,
+    type SemanticClassifierState,
+} from './semantic-tokens/classifier'
 
 const semanticTokensLegend = new vscode.SemanticTokensLegend(
     [
@@ -31,22 +36,6 @@ const semanticTokensLegend = new vscode.SemanticTokensLegend(
     ],
     ['declaration'],
 )
-
-type DeclTypeKeyword =
-    | 'data'
-    | 'object'
-    | 'service'
-    | 'enum'
-    | 'union'
-    | 'role'
-    | 'trait'
-
-type SemanticClassifierState = {
-    expectTypeDeclarationName: boolean
-    pendingTypeDeclarationKind: DeclTypeKeyword | null
-    expectTypeReference: boolean
-    knownTypeNames: Set<string>
-}
 
 type SemanticTokenStopReason =
     | 'completed'
@@ -296,12 +285,8 @@ class ClawrSemanticTokenProvider
         let tokenCount = 0
         let lastLine = -1
         let lastEndChar = -1
-        const classifierState: SemanticClassifierState = {
-            expectTypeDeclarationName: false,
-            pendingTypeDeclarationKind: null,
-            expectTypeReference: false,
-            knownTypeNames: new Set<string>(),
-        }
+        const classifierState: SemanticClassifierState =
+            createSemanticClassifierState()
 
         try {
             // Only get text from the requested range, or full document if no range
@@ -413,120 +398,16 @@ class ClawrSemanticTokenProvider
             declaration: 0,
         }
 
-        let typeIdx = -1
+        const classification = classifyClawrToken(tok, state)
+        if (!classification.tokenType) return [-1, 0]
+
+        const typeIdx = typeMap[classification.tokenType]
         let modBits = 0
-
-        switch (tok.kind) {
-            case 'KEYWORD':
-                typeIdx = typeMap['keyword']
-                const mods = this.getKeywordModifiers(tok.keyword)
-                mods.forEach((mod) => {
-                    modBits |= 1 << modMap[mod]
-                })
-
-                if (this.isTypeDeclarationKeyword(tok.keyword)) {
-                    state.expectTypeDeclarationName = true
-                    state.pendingTypeDeclarationKind = tok.keyword
-                } else if (tok.keyword !== 'helper') {
-                    state.expectTypeDeclarationName = false
-                    state.pendingTypeDeclarationKind = null
-                }
-                break
-            case 'IDENTIFIER':
-                if (
-                    state.expectTypeDeclarationName &&
-                    state.pendingTypeDeclarationKind
-                ) {
-                    const typeToken = this.declarationKindToIdentifierType(
-                        state.pendingTypeDeclarationKind,
-                    )
-                    typeIdx = typeMap[typeToken]
-                    modBits |= 1 << modMap['declaration']
-                    state.knownTypeNames.add(tok.identifier)
-                    state.expectTypeDeclarationName = false
-                    state.pendingTypeDeclarationKind = null
-                    state.expectTypeReference = false
-                    break
-                }
-
-                if (
-                    state.expectTypeReference &&
-                    state.knownTypeNames.has(tok.identifier)
-                ) {
-                    typeIdx = typeMap['type']
-                } else {
-                    typeIdx = typeMap['variable']
-                }
-
-                state.expectTypeReference = false
-                break
-            case 'STRING_LITERAL':
-                typeIdx = typeMap['string']
-                state.expectTypeReference = false
-                break
-            case 'REGEX_LITERAL':
-                typeIdx = typeMap['regexp']
-                state.expectTypeReference = false
-                break
-            case 'INTEGER_LITERAL':
-            case 'REAL_LITERAL':
-            case 'TRUTH_LITERAL':
-                typeIdx = typeMap['number']
-                state.expectTypeReference = false
-                break
-            case 'OPERATOR':
-                typeIdx = typeMap['operator']
-                if (tok.operator !== '.') {
-                    state.expectTypeReference = false
-                }
-                break
-            case 'PUNCTUATION':
-                typeIdx = typeMap['operator']
-                if (tok.symbol === ':' || tok.symbol === '->') {
-                    state.expectTypeReference = true
-                } else if (tok.symbol !== ',' && tok.symbol !== ')') {
-                    state.expectTypeReference = false
-                }
-                break
-            case 'NEWLINE':
-                state.expectTypeReference = false
-                break
+        for (const modifier of classification.modifiers) {
+            modBits |= 1 << modMap[modifier]
         }
 
         return [typeIdx, modBits]
-    }
-
-    private isTypeDeclarationKeyword(
-        keyword: string,
-    ): keyword is DeclTypeKeyword {
-        return (
-            keyword === 'data' ||
-            keyword === 'object' ||
-            keyword === 'service' ||
-            keyword === 'enum' ||
-            keyword === 'union' ||
-            keyword === 'role' ||
-            keyword === 'trait'
-        )
-    }
-
-    private declarationKindToIdentifierType(
-        kind: DeclTypeKeyword,
-    ): 'class' | 'struct' | 'type' {
-        if (kind === 'data') return 'struct'
-        if (kind === 'object' || kind === 'service') return 'class'
-        return 'type'
-    }
-
-    private getKeywordModifiers(keyword: string): string[] {
-        if (
-            ['func', 'data', 'object', 'service', 'enum', 'union'].includes(
-                keyword,
-            )
-        ) {
-            return ['declaration']
-        }
-        return []
     }
 
     private getTokenLength(tok: any): number {
