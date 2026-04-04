@@ -1,0 +1,62 @@
+{
+  "name": "clawr-compiler",
+  "displayName": "Clawr",
+  "publisher": "clawrlang",
+  "version": "0.1.0",
+  "description": "VSCode extension for the Clawr language",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:clawr",
+    "onCommand:clawr.hello"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "clawr",
+        "aliases": [
+          "Clawr",
+          "clawr"
+        ],
+        "extensions": [
+          ".clawr"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "clawr.hello",
+        "title": "Clawr: Hello"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./tsconfig.extension.json",
+    "watch": "tsc -w -p ./tsconfig.extension.json",
+    "vscode:prepublish": "npm run compile",
+    "lint": "eslint . --ext .ts",
+    "test": "tsc && bun test"
+  },
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "commander": "^14.0.0",
+    "decimalish": "^0.1.2",
+    "fast-glob": "^3.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.1",
+    "@types/vscode": "^1.95.0",
+    "@types/bun": "^1.3.9",
+    "bun": "^1.3.10",
+    "eslint": "^10.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^6.0.2"
+  }
+}

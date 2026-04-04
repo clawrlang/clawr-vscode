@@ -1,0 +1,32 @@
+# TODO
+
+## Technical Debt
+
+- Errors without position tagging
+- **`IRGenerator`**: contains a reference to `ASTExpression`
+- Change `PrintStatement` to a function call.
+  - Can probably not be done until `trait` support is added
+  - `trait HasStringRepresentation { func toString() -> string }`
+  - Or use something like C# implicit/explicit operator instead of `toString()`?
+- Object-oriented lowering helpers?
+- `visibility: 'helper'` -> `isHelper: true`?
+- `import`: too TypeScript?
+- Convert `print` statement to a function call (tagged as `external`)
+- e2e test with helper in the same module?
+- Should helper types/functions be visible to all modules in the package/library?
+- **`SemanticAnalyzer`**: Object method may not have external side-effects
+- **`IRGenerator`**: does it lower names correctly?
+  - Use `·` in function names to indicate instance method
+  - Use `¸` in static member names (companion methods)
+  - Use `ˇ` in runtime artefacts (`ˇtype`, `tempˇ0` etc)
+  - Include labels in function names (`basename_label1_label2(x, y)`)
+    - Unlabelled parameters are empty between underscores (`basename__label(x, y)`)
+    - No labelled parameters at all require no underscores (`basename(x, y)`)
+    - see `mangleCallName`s
+- Parser: Is a method call parsed as target-expr `.` function-call?
+- `object` should be allowed side-effects in `DEBUG` mode
+  - Mark specific debug APIs (that are removed in production) as pure
+- Methods should not need to declare `self` parameter
+  - `func adjust(self: const Square, down amount: integer)`
+  - `func adjust(down amount: integer)`
+- `print poly.edges` should be an error. Expose `edges` through a getter instead.

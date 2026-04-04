@@ -1,0 +1,2492 @@
+import type {
+    ASTAssignment,
+    ASTDataDeclaration,
+    ASTDataLiteral,
+    ASTExpression,
+    ASTFunctionDeclaration,
+    ASTIdentifier,
+    ASTProgram,
+    ASTReturnStatement,
+    ASTStatement,
+    ASTVariableDeclaration,
+} from '../ast'
+import type { ASTObjectDeclaration, ASTServiceDeclaration } from '../ast'
+import type {
+    SemanticAssignment,
+    SemanticCopyExpression,
+    SemanticDataDeclaration,
+    SemanticExpression,
+    SemanticFieldAccess,
+    SemanticFunction,
+    SemanticModule,
+    SemanticOwnershipEffects,
+    SemanticPrintStatement,
+    SemanticReturnStatement,
+    SemanticStatement,
+    SemanticVariableDeclaration,
+} from './ast'
+
+export type {
+    SemanticArrayIndexExpression,
+    SemanticAssignment,
+    SemanticDataDeclaration,
+    SemanticForInStatement,
+    SemanticFieldAccess,
+    SemanticFunction,
+    SemanticModule,
+    SemanticOwnershipEffects,
+    SemanticPrintStatement,
+    SemanticReturnStatement,
+    SemanticStatement,
+    SemanticExpression,
+    SemanticValueSet,
+    SemanticVariableDeclaration,
+    SemanticTypeKind,
+    SemanticFunctionSignature,
+} from './ast'
+
+export class SemanticAnalyzer {
+    private bindings: BindingMap = new Map()
+    private dataTypes: Map<string, BindingMap>
+    private functionSignatures: Map<string, FunctionSignature>
+    private typeKinds: Map<string, TypeKind>
+    private objectSupertypes: Map<string, string>
+
+    constructor(
+        private ast: ASTProgram,
+        private parent?: SemanticAnalyzer,
+        dataTypes?: Map<string, BindingMap>,
+        functionSignatures?: Map<string, FunctionSignature>,
+        typeKinds?: Map<string, TypeKind>,
+        objectSupertypes?: Map<string, string>,
+        private loopDepth = 0,
+        private currentFunctionReturnType?: string,
+        private currentOwnerType?: string,
+        private currentOwnerKind?: 'object' | 'service',
+        private currentMethodMutating = false,
+        private currentFunctionEffectLevel: EffectLevel | null = null,
+    ) {
+        this.dataTypes = dataTypes ?? parent?.dataTypes ?? new Map()
+        this.functionSignatures =
+            functionSignatures ?? parent?.functionSignatures ?? new Map()
+        this.typeKinds = typeKinds ?? parent?.typeKinds ?? new Map()
+        this.objectSupertypes =
+            objectSupertypes ?? parent?.objectSupertypes ?? new Map()
+    }
+
+    analyze(): SemanticModule {
+        const types: SemanticDataDeclaration[] = []
+        const objects: ASTObjectDeclaration[] = []
+        const services: ASTServiceDeclaration[] = []
+        const mainBody: SemanticStatement[] = []
+        const userFunctions: SemanticFunction[] = []
+        const typeMethods: SemanticFunction[] = []
+
+        // First pass: register all type and function names so forward references work.
+        for (const stmt of this.ast.body) {
+            if (stmt.kind === 'data-decl') {
+                this.registerDataDeclaration(stmt)
+                types.push(this.annotateDataDeclaration(stmt))
+            }
+            if (stmt.kind === 'func-decl') {
+                this.bindings.set(stmt.name, {
+                    type: 'func',
+                    semantics: 'const',
+                    declarationPosition: stmt.position,
+                })
+                const labels = stmt.parameters.map(
+                    (param) => param.label ?? '_',
+                )
+                this.functionSignatures.set(
+                    buildFunctionSignatureKey(stmt.name, labels),
+                    {
+                        name: stmt.name,
+                        visibility: stmt.visibility,
+                        labels,
+                        returnType: stmt.returnType,
+                        returnSemantics: stmt.returnSemantics,
+                        arity: stmt.parameters.length,
+                        parameterTypes: stmt.parameters.map(
+                            (param) => param.type,
+                        ),
+                        parameterSemantics: stmt.parameters.map(
+                            (param) => param.semantics ?? 'const',
+                        ),
+                        effectLevel: 'external',
+                    },
+                )
+            }
+            if (stmt.kind === 'object-decl') {
+                this.registerTypeDeclaration('object', stmt)
+                this.registerMethodSignatures(
+                    'object',
+                    stmt.name,
+                    stmt.sections,
+                )
+                objects.push(stmt)
+            }
+            if (stmt.kind === 'service-decl') {
+                this.registerTypeDeclaration('service', stmt)
+                this.registerMethodSignatures(
+                    'service',
+                    stmt.name,
+                    stmt.sections,
+                )
+                services.push(stmt)
+            }
+        }
+
+        this.validateDataFieldSemantics(types)
+        this.validateTypeFieldSemantics(objects, services)
+        this.validateObjectHierarchies(objects)
+
+        // Second pass: analyze function bodies and module-level statements.
+        const mainScopedAnalyzer = this.createChildScope()
+        for (const stmt of this.ast.body) {
+            if (stmt.kind === 'func-decl') {
+                const analyzed = this.analyzeFunctionDeclaration(stmt)
+                const labels = stmt.parameters.map(
+                    (param) => param.label ?? '_',
+                )
+                userFunctions.push({
+                    ...analyzed,
+                    name: mangleCallableName(stmt.name, labels),
+                })
+                continue
+            }
+            if (stmt.kind === 'object-decl') {
+                typeMethods.push(
+                    ...this.analyzeTypeMethods(
+                        stmt.name,
+                        'object',
+                        stmt.sections,
+                    ),
+                )
+                continue
+            }
+            if (stmt.kind === 'service-decl') {
+                typeMethods.push(
+                    ...this.analyzeTypeMethods(
+                        stmt.name,
+                        'service',
+                        stmt.sections,
+                    ),
+                )
+                continue
+            }
+            if (stmt.kind === 'data-decl') continue
+            mainBody.push(mainScopedAnalyzer.analyzeStatement(stmt))
+        }
+
+        const mainFunction: SemanticFunction = {
+            kind: 'function',
+            name: 'main',
+            parameters: [],
+            body: mainBody,
+        }
+
+        return {
+            imports: this.ast.imports.map((imp) => ({
+                ...imp,
+                items: imp.items.map((item) => ({ ...item })),
+            })),
+            functions: [mainFunction, ...userFunctions, ...typeMethods],
+            types,
+            objects,
+            services,
+            globals: [],
+            typeKinds: this.typeKinds,
+            functionSignatures: this.functionSignatures,
+        }
+    }
+
+    private createChildScope(): SemanticAnalyzer {
+        return new SemanticAnalyzer(
+            this.ast,
+            this,
+            this.dataTypes,
+            this.functionSignatures,
+            this.typeKinds,
+            this.objectSupertypes,
+            this.loopDepth,
+            this.currentFunctionReturnType,
+            this.currentOwnerType,
+            this.currentOwnerKind,
+            this.currentMethodMutating,
+            this.currentFunctionEffectLevel,
+        )
+    }
+
+    private createLoopChildScope(): SemanticAnalyzer {
+        return new SemanticAnalyzer(
+            this.ast,
+            this,
+            this.dataTypes,
+            this.functionSignatures,
+            this.typeKinds,
+            this.objectSupertypes,
+            this.loopDepth + 1,
+            this.currentFunctionReturnType,
+            this.currentOwnerType,
+            this.currentOwnerKind,
+            this.currentMethodMutating,
+            this.currentFunctionEffectLevel,
+        )
+    }
+
+    private createFunctionChildScope(
+        returnType?: string,
+        ownerType?: string,
+        ownerKind?: 'object' | 'service',
+        methodMutating = false,
+    ): SemanticAnalyzer {
+        // For free functions, infer effect level; for methods, we already know it
+        const inferEffect = ownerType ? null : ('pure' as EffectLevel)
+        return new SemanticAnalyzer(
+            this.ast,
+            this,
+            this.dataTypes,
+            this.functionSignatures,
+            this.typeKinds,
+            this.objectSupertypes,
+            0, // reset loop depth — break/continue inside a nested function is not the outer loop's
+            returnType,
+            ownerType,
+            ownerKind,
+            methodMutating,
+            inferEffect,
+        )
+    }
+
+    private analyzeStatement(stmt: ASTStatement): SemanticStatement {
+        switch (stmt.kind) {
+            case 'data-decl':
+                throw new Error('Unexpected data declaration in statement body')
+            case 'func-decl':
+                throw new Error(
+                    'Unexpected function declaration in statement body',
+                )
+            case 'object-decl':
+                throw new Error(
+                    'Unexpected object declaration in statement body',
+                )
+            case 'service-decl':
+                throw new Error(
+                    'Unexpected service declaration in statement body',
+                )
+            case 'var-decl':
+                return this.analyzeVariableDeclaration(stmt)
+            case 'print':
+                return this.analyzePrintStatement(stmt)
+            case 'assign':
+                return this.analyzeAssignment(stmt)
+            case 'if':
+                return this.analyzeIfStatement(stmt)
+            case 'while':
+                return this.analyzeWhileStatement(stmt)
+            case 'for-in':
+                return this.analyzeForInStatement(stmt)
+            case 'break':
+                return this.analyzeBreakStatement(stmt)
+            case 'continue':
+                return this.analyzeContinueStatement(stmt)
+            case 'return':
+                return this.analyzeReturnStatement(stmt)
+            default:
+                return stmt
+        }
+    }
+
+    private analyzeReturnStatement(
+        stmt: ASTReturnStatement,
+    ): SemanticReturnStatement {
+        if (stmt.value === undefined) {
+            if (this.currentFunctionReturnType !== undefined) {
+                throw new Error(
+                    `${stmt.position.line}:${stmt.position.column}:Return statement requires a value of type '${this.currentFunctionReturnType}'`,
+                )
+            }
+
+            return { kind: 'return', position: stmt.position }
+        }
+
+        // Validate the return expression first so specific diagnostics like
+        // unknown identifiers surface before the enclosing function contract.
+        const returnType = this.inferExpressionType(stmt.value)
+
+        if (this.currentFunctionReturnType === undefined) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot return a value from a function without a return type annotation`,
+            )
+        }
+
+        if (
+            returnType &&
+            !this.isTypeAssignable(returnType, this.currentFunctionReturnType)
+        ) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Return type mismatch: expected '${this.currentFunctionReturnType}' but got '${returnType}'`,
+            )
+        }
+
+        return {
+            kind: 'return',
+            value: this.rewriteExpression(stmt.value),
+            position: stmt.position,
+        }
+    }
+
+    private analyzeIfStatement(
+        stmt: Extract<ASTStatement, { kind: 'if' }>,
+    ): SemanticStatement {
+        this.assertTruthvalueCondition(stmt.condition, stmt.position, 'if')
+
+        const thenAnalyzer = this.createChildScope()
+        const thenBranch = stmt.thenBranch.map((child) =>
+            thenAnalyzer.analyzeStatement(child),
+        )
+
+        const elseBranch = stmt.elseBranch
+            ? (() => {
+                  const elseAnalyzer = this.createChildScope()
+                  return stmt.elseBranch.map((child) =>
+                      elseAnalyzer.analyzeStatement(child),
+                  )
+              })()
+            : undefined
+
+        return {
+            kind: 'if',
+            condition: this.rewriteExpression(stmt.condition),
+            thenBranch,
+            elseBranch,
+            position: stmt.position,
+        }
+    }
+
+    private analyzeWhileStatement(
+        stmt: Extract<ASTStatement, { kind: 'while' }>,
+    ): SemanticStatement {
+        this.assertTruthvalueCondition(stmt.condition, stmt.position, 'while')
+
+        const loopAnalyzer = this.createLoopChildScope()
+        const body = stmt.body.map((child) =>
+            loopAnalyzer.analyzeStatement(child),
+        )
+
+        return {
+            kind: 'while',
+            condition: this.rewriteExpression(stmt.condition),
+            body,
+            position: stmt.position,
+        }
+    }
+
+    private analyzeForInStatement(
+        stmt: Extract<ASTStatement, { kind: 'for-in' }>,
+    ): SemanticStatement {
+        const iterableType = this.inferExpressionType(stmt.iterable)
+        if (!iterableType) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for for-in iterable`,
+            )
+        }
+
+        if (!this.isArrayType(iterableType)) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:for-in iterable must be array, got '${iterableType}'`,
+            )
+        }
+
+        const elementType = this.arrayElementType(iterableType)
+        if (!elementType) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot resolve array element type from '${iterableType}'`,
+            )
+        }
+
+        const loopAnalyzer = this.createLoopChildScope()
+        loopAnalyzer.declareBinding(
+            stmt.loopVar,
+            {
+                type: elementType,
+                semantics: 'const',
+            },
+            stmt.position,
+        )
+
+        const body = stmt.body.map((child) =>
+            loopAnalyzer.analyzeStatement(child),
+        )
+
+        return {
+            kind: 'for-in',
+            loopVar: stmt.loopVar,
+            iterable: this.rewriteExpression(stmt.iterable),
+            elementType,
+            body,
+            position: stmt.position,
+        }
+    }
+
+    private analyzeBreakStatement(
+        stmt: Extract<ASTStatement, { kind: 'break' }>,
+    ): SemanticStatement {
+        if (this.loopDepth <= 0) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:break is only allowed inside a while loop`,
+            )
+        }
+
+        return stmt
+    }
+
+    private analyzeContinueStatement(
+        stmt: Extract<ASTStatement, { kind: 'continue' }>,
+    ): SemanticStatement {
+        if (this.loopDepth <= 0) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:continue is only allowed inside a while loop`,
+            )
+        }
+
+        return stmt
+    }
+
+    private assertTruthvalueCondition(
+        condition: ASTExpression,
+        position: { line: number; column: number },
+        keyword: 'if' | 'while',
+    ): void {
+        const conditionType = this.inferExpressionType(condition)
+        if (conditionType !== 'truthvalue') {
+            throw new Error(
+                `${position.line}:${position.column}:${keyword} condition must be truthvalue, got '${conditionType ?? condition.kind}'`,
+            )
+        }
+    }
+
+    private analyzePrintStatement(
+        stmt: Extract<ASTStatement, { kind: 'print' }>,
+    ): SemanticPrintStatement {
+        if (this.currentOwnerKind === 'object') {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Object methods may not perform external side-effects (print)`,
+            )
+        }
+
+        // Mark free functions as external if they contain print
+        if (this.currentFunctionEffectLevel !== null) {
+            this.currentFunctionEffectLevel = 'external'
+        }
+
+        const dispatchType = this.inferExpressionType(stmt.value)
+        if (!dispatchType) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot infer print dispatch type from '${stmt.value.kind}'`,
+            )
+        }
+
+        return {
+            ...stmt,
+            value: this.rewriteExpression(stmt.value),
+            dispatchType,
+        }
+    }
+
+    private analyzeAssignment(stmt: ASTAssignment): SemanticAssignment {
+        if (!this.isAssignableTarget(stmt.target)) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Invalid assignment target kind '${stmt.target.kind}'`,
+            )
+        }
+
+        this.validateMethodAssignmentRules(stmt.target, stmt.position)
+
+        this.validateAssignmentMutationSemantics(stmt.target)
+
+        const targetType = this.inferExpressionType(stmt.target)
+        const valueType = this.inferExpressionType(stmt.value)
+        const targetSemantics = this.inferExpressionSemantics(stmt.target)
+        const valueSemantics = this.inferExpressionSemantics(stmt.value)
+
+        if (!targetType) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for assignment target '${stmt.target.kind}'`,
+            )
+        }
+
+        if (!valueType) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for assignment value '${stmt.value.kind}'`,
+            )
+        }
+
+        if (!this.isTypeAssignable(valueType, targetType)) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Assignment type mismatch: target is '${targetType}' but value is '${valueType}'`,
+            )
+        }
+
+        const rewrittenTarget = this.rewriteExpression(stmt.target)
+        const rewrittenValue = this.rewriteExpression(stmt.value)
+
+        this.validateSemanticBoundary(
+            targetType,
+            targetSemantics,
+            valueSemantics,
+            rewrittenValue,
+            stmt.position,
+        )
+
+        return {
+            kind: 'assign',
+            target: rewrittenTarget,
+            value: rewrittenValue,
+            ownership: this.buildAssignmentOwnership(
+                rewrittenTarget,
+                rewrittenValue,
+                targetType,
+                targetSemantics,
+                valueSemantics,
+            ),
+            position: stmt.position,
+        }
+    }
+
+    private buildAssignmentOwnership(
+        target: SemanticAssignment['target'],
+        value: SemanticAssignment['value'],
+        targetType: string,
+        targetSemantics: ASTVariableDeclaration['semantics'] | null,
+        valueSemantics: ASTVariableDeclaration['semantics'] | null,
+    ): SemanticOwnershipEffects {
+        if (target.kind === 'field-access') {
+            const ownership: SemanticOwnershipEffects = {
+                mutates: this.collectMutateTargets(target),
+            }
+
+            if (
+                this.isReferenceType(targetType) &&
+                this.isCopyExpression(value)
+            ) {
+                ownership.copyValueSemantics =
+                    this.toRuntimeSemanticsFlag(targetSemantics)
+            }
+
+            return ownership
+        }
+
+        if (target.kind === 'identifier' && this.isReferenceType(targetType)) {
+            if (this.isCopyExpression(value)) {
+                return {
+                    releases: [target],
+                    copyValueSemantics:
+                        this.toRuntimeSemanticsFlag(targetSemantics),
+                }
+            }
+
+            return {
+                retains: [value],
+                releases: [target],
+            }
+        }
+
+        return {}
+    }
+
+    private isAssignableTarget(target: ASTExpression): boolean {
+        return (
+            target.kind === 'identifier' ||
+            (target.kind === 'binary' &&
+                (target.operator === '.' || target.operator === '[]'))
+        )
+    }
+
+    private rewriteExpression(expr: ASTExpression): SemanticExpression {
+        if (expr.kind === 'when') {
+            return {
+                kind: 'when',
+                subject: this.rewriteExpression(expr.subject),
+                branches: expr.branches.map((branch) => ({
+                    pattern:
+                        branch.pattern.kind === 'wildcard-pattern'
+                            ? branch.pattern
+                            : {
+                                  kind: 'value-pattern' as const,
+                                  value: this.rewriteExpression(
+                                      branch.pattern.value,
+                                  ),
+                                  position: branch.pattern.position,
+                              },
+                    value: this.rewriteExpression(branch.value),
+                })),
+                position: expr.position,
+            }
+        }
+
+        if (expr.kind === 'array-literal') {
+            return {
+                kind: 'array-literal',
+                elements: expr.elements.map((element) =>
+                    this.rewriteExpression(element),
+                ),
+                position: expr.position,
+            }
+        }
+
+        if (expr.kind === 'copy') {
+            return {
+                ...expr,
+                value: this.rewriteExpression(expr.value),
+            }
+        }
+
+        if (expr.kind === 'call') {
+            if (
+                expr.callee.kind === 'binary' &&
+                expr.callee.operator === '.' &&
+                expr.callee.right.kind === 'identifier'
+            ) {
+                const receiverType = this.inferExpressionType(expr.callee.left)
+                if (!receiverType) {
+                    throw new Error(
+                        `${expr.callee.position.line}:${expr.callee.position.column}:Cannot infer type for method call receiver`,
+                    )
+                }
+
+                const signature = this.resolveMethodSignature(
+                    receiverType,
+                    expr.callee.right.name,
+                    expr.arguments.map((arg) => arg.label ?? '_'),
+                )
+                if (!signature) {
+                    throw new Error(
+                        `${expr.position.line}:${expr.position.column}:Function/method not found '${renderFunctionSignature(
+                            expr.callee.right.name,
+                            expr.arguments.map((arg) => arg.label ?? '_'),
+                            receiverType,
+                        )}'`,
+                    )
+                }
+
+                return {
+                    kind: 'call',
+                    callee: {
+                        kind: 'identifier',
+                        name: `${signature.ownerType ?? receiverType}·${expr.callee.right.name}`,
+                        position: expr.callee.right.position,
+                    },
+                    arguments: [
+                        {
+                            value: this.rewriteExpression(expr.callee.left),
+                        },
+                        ...expr.arguments.map((arg) => ({
+                            label: arg.label,
+                            value: this.rewriteExpression(arg.value),
+                        })),
+                    ],
+                    dispatch: this.buildCallDispatch(
+                        signature,
+                        expr.callee.right.name,
+                        expr.arguments.map((arg) => arg.label ?? '_'),
+                        receiverType,
+                    ),
+                    position: expr.position,
+                }
+            }
+
+            return {
+                kind: 'call',
+                callee: this.rewriteExpression(expr.callee),
+                arguments: expr.arguments.map((arg) => ({
+                    label: arg.label,
+                    value: this.rewriteExpression(arg.value),
+                })),
+                dispatch: { kind: 'direct' },
+                position: expr.position,
+            }
+        }
+
+        if (expr.kind !== 'binary') return expr
+
+        if (expr.operator === '[]') {
+            const arrayType = this.inferExpressionType(expr.left)
+            if (!arrayType || !this.isArrayType(arrayType)) {
+                throw new Error(
+                    `${expr.position.line}:${expr.position.column}:Indexing expects an array value, got '${arrayType ?? expr.left.kind}'`,
+                )
+            }
+
+            const indexType = this.inferExpressionType(expr.right)
+            if (indexType !== 'integer') {
+                throw new Error(
+                    `${expr.position.line}:${expr.position.column}:Array index must be integer, got '${indexType ?? expr.right.kind}'`,
+                )
+            }
+
+            const elementType = this.arrayElementType(arrayType)
+            if (!elementType) {
+                throw new Error(
+                    `${expr.position.line}:${expr.position.column}:Invalid array type '${arrayType}'`,
+                )
+            }
+
+            return {
+                kind: 'array-index',
+                array: this.rewriteExpression(expr.left),
+                index: this.rewriteExpression(expr.right),
+                elementType,
+                position: expr.position,
+            }
+        }
+
+        if (expr.operator === '+') {
+            const leftType = this.inferExpressionType(expr.left)
+            const rightType = this.inferExpressionType(expr.right)
+            const operator =
+                leftType === 'integer' && rightType === 'integer'
+                    ? 'integer-add'
+                    : '+'
+            return {
+                kind: 'binary',
+                operator,
+                left: this.rewriteExpression(expr.left),
+                right: this.rewriteExpression(expr.right),
+                position: expr.position,
+            }
+        }
+
+        if (
+            expr.operator === '-' ||
+            expr.operator === '*' ||
+            expr.operator === '/'
+        ) {
+            const opMap: Record<string, string> = {
+                '-': 'integer-sub',
+                '*': 'integer-mul',
+                '/': 'integer-div',
+            }
+            return {
+                kind: 'binary',
+                operator: opMap[expr.operator],
+                left: this.rewriteExpression(expr.left),
+                right: this.rewriteExpression(expr.right),
+                position: expr.position,
+            }
+        }
+
+        if (expr.operator === '==' || expr.operator === '!=') {
+            const leftType = this.inferExpressionType(expr.left)
+            const opPrefix =
+                leftType === 'integer'
+                    ? 'integer'
+                    : leftType === 'string'
+                      ? 'string'
+                      : 'truthvalue'
+            const opSuffix = expr.operator === '==' ? 'eq' : 'ne'
+            return {
+                kind: 'binary',
+                operator: `${opPrefix}-${opSuffix}`,
+                left: this.rewriteExpression(expr.left),
+                right: this.rewriteExpression(expr.right),
+                position: expr.position,
+            }
+        }
+
+        if (
+            expr.operator === '<' ||
+            expr.operator === '<=' ||
+            expr.operator === '>' ||
+            expr.operator === '>='
+        ) {
+            const opMap: Record<string, string> = {
+                '<': 'integer-lt',
+                '<=': 'integer-le',
+                '>': 'integer-gt',
+                '>=': 'integer-ge',
+            }
+            return {
+                kind: 'binary',
+                operator: opMap[expr.operator],
+                left: this.rewriteExpression(expr.left),
+                right: this.rewriteExpression(expr.right),
+                position: expr.position,
+            }
+        }
+
+        if (expr.operator === '&&' || expr.operator === '||') {
+            const op =
+                expr.operator === '&&' ? 'truthvalue-and' : 'truthvalue-or'
+            return {
+                kind: 'binary',
+                operator: op,
+                left: this.rewriteExpression(expr.left),
+                right: this.rewriteExpression(expr.right),
+                position: expr.position,
+            }
+        }
+
+        if (expr.operator !== '.') {
+            throw new Error(
+                `${expr.position.line}:${expr.position.column}:Unsupported binary operator '${expr.operator}'`,
+            )
+        }
+        if (expr.right.kind !== 'identifier') {
+            throw new Error(
+                `${expr.right.position.line}:${expr.right.position.column}:Field name must be an identifier`,
+            )
+        }
+        return {
+            kind: 'field-access',
+            object: this.rewriteExpression(expr.left),
+            field: expr.right.name,
+            position: expr.position,
+        }
+    }
+
+    private analyzeFunctionDeclaration(
+        stmt: ASTFunctionDeclaration,
+    ): SemanticFunction {
+        this.validateMethodDeclarationRules(stmt)
+        this.validateServiceFunctionRestrictions(stmt)
+
+        const bodyAnalyzer = this.createFunctionChildScope(
+            stmt.returnType,
+            this.currentOwnerType,
+            this.currentOwnerKind,
+            this.currentMethodMutating,
+        )
+
+        // Inject parameters as bindings in the function scope.
+        for (const param of stmt.parameters) {
+            bodyAnalyzer.bindings.set(param.name, {
+                type: param.type,
+                semantics: param.semantics ?? 'const',
+                declarationPosition: param.position,
+            })
+        }
+
+        const body = this.analyzeFunctionBody(stmt, bodyAnalyzer)
+
+        // Update function signature with inferred effect level for free functions
+        if (
+            !this.currentOwnerType &&
+            bodyAnalyzer.currentFunctionEffectLevel !== null
+        ) {
+            const labels = stmt.parameters.map((param) => param.label ?? '_')
+            const key = buildFunctionSignatureKey(stmt.name, labels)
+            const signature = this.functionSignatures.get(key)
+            if (signature) {
+                signature.effectLevel = bodyAnalyzer.currentFunctionEffectLevel
+            }
+        }
+
+        return {
+            kind: 'function',
+            name: stmt.name,
+            parameters: stmt.parameters,
+            returnType: stmt.returnType,
+            returnSemantics: stmt.returnSemantics,
+            body,
+        }
+    }
+
+    private validateMethodDeclarationRules(stmt: ASTFunctionDeclaration): void {
+        if (!this.currentOwnerType) return
+        if (this.currentMethodMutating) return
+        if (stmt.returnType !== undefined) return
+
+        throw new Error(
+            `${stmt.position.line}:${stmt.position.column}:Immutable method '${this.currentOwnerType}.${stmt.name}' must declare a return type`,
+        )
+    }
+
+    private analyzeFunctionBody(
+        stmt: ASTFunctionDeclaration,
+        bodyAnalyzer: SemanticAnalyzer,
+    ): SemanticStatement[] {
+        if (stmt.body.kind === 'block') {
+            return stmt.body.statements.map((s) =>
+                bodyAnalyzer.analyzeStatement(s),
+            )
+        }
+
+        // Shorthand `=> expr` body: treat as a single implicit return.
+        if (stmt.returnType === undefined) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Shorthand body '=> expr' requires a return type annotation on function '${stmt.name}'`,
+            )
+        }
+
+        return [
+            bodyAnalyzer.analyzeReturnStatement({
+                kind: 'return',
+                value: stmt.body.value,
+                position: stmt.body.value.position,
+            }),
+        ]
+    }
+
+    private registerTypeDeclaration(
+        typeKind: 'object' | 'service',
+        stmt: ASTObjectDeclaration | ASTServiceDeclaration,
+    ) {
+        const dataSection = stmt.sections.find(
+            (section): section is Extract<typeof section, { kind: 'data' }> =>
+                section.kind === 'data',
+        )
+        const fields = new Map(
+            (dataSection?.fields ?? []).map((field) => [
+                field.name,
+                {
+                    type: field.type,
+                    semantics: field.semantics ?? 'mut',
+                    declarationPosition: field.position,
+                },
+            ]),
+        )
+
+        // Register the type name so it can be used in variable declarations,
+        // literals, and field accesses.
+        this.dataTypes.set(stmt.name, fields)
+        this.typeKinds.set(stmt.name, typeKind)
+
+        if (
+            typeKind === 'object' &&
+            stmt.kind === 'object-decl' &&
+            stmt.supertype
+        ) {
+            this.objectSupertypes.set(stmt.name, stmt.supertype)
+        }
+    }
+
+    private validateObjectHierarchies(objects: ASTObjectDeclaration[]): void {
+        for (const objectDecl of objects) {
+            this.validateDeclaredSupertype(objectDecl)
+        }
+
+        for (const objectDecl of objects) {
+            this.validateInheritanceCycle(objectDecl)
+            this.validateMethodOverrides(objectDecl)
+        }
+    }
+
+    private validateDeclaredSupertype(objectDecl: ASTObjectDeclaration): void {
+        if (!objectDecl.supertype) return
+
+        const supertypeKind = this.lookupTypeKind(objectDecl.supertype)
+        if (!supertypeKind) {
+            throw new Error(
+                `${objectDecl.position.line}:${objectDecl.position.column}:Unknown supertype '${objectDecl.supertype}' for object '${objectDecl.name}'`,
+            )
+        }
+
+        if (supertypeKind !== 'object') {
+            throw new Error(
+                `${objectDecl.position.line}:${objectDecl.position.column}:Object '${objectDecl.name}' cannot inherit from non-object type '${objectDecl.supertype}'`,
+            )
+        }
+    }
+
+    private validateInheritanceCycle(objectDecl: ASTObjectDeclaration): void {
+        const seen = new Set<string>()
+        let current: string | undefined = objectDecl.name
+
+        while (current) {
+            if (seen.has(current)) {
+                throw new Error(
+                    `${objectDecl.position.line}:${objectDecl.position.column}:Cyclic inheritance involving '${objectDecl.name}'`,
+                )
+            }
+
+            seen.add(current)
+            current = this.lookupObjectSupertype(current)
+        }
+    }
+
+    private validateMethodOverrides(objectDecl: ASTObjectDeclaration): void {
+        for (const section of objectDecl.sections) {
+            if (section.kind !== 'methods' && section.kind !== 'mutating') {
+                continue
+            }
+
+            for (const method of section.items) {
+                const callableParams =
+                    method.parameters[0]?.name === 'self'
+                        ? method.parameters.slice(1)
+                        : method.parameters
+                const labels = callableParams.map((param) => param.label ?? '_')
+                const baseSignature = this.lookupInheritedMethodSignature(
+                    objectDecl.supertype,
+                    method.name,
+                    labels,
+                )
+
+                if (!baseSignature) continue
+
+                const overrideName = renderFunctionSignature(
+                    method.name,
+                    labels,
+                    objectDecl.name,
+                )
+                const overrideEffectLevel = this.methodEffectLevel(
+                    'object',
+                    section.kind,
+                )
+
+                if (method.returnType !== baseSignature.returnType) {
+                    throw new Error(
+                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match return type '${baseSignature.returnType ?? 'void'}', got '${method.returnType ?? 'void'}'`,
+                    )
+                }
+
+                if (method.returnSemantics !== baseSignature.returnSemantics) {
+                    throw new Error(
+                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match return semantics '${baseSignature.returnSemantics ?? 'unique'}', got '${method.returnSemantics ?? 'unique'}'`,
+                    )
+                }
+
+                if (
+                    callableParams.length !==
+                        baseSignature.parameterTypes.length ||
+                    callableParams.some(
+                        (param, index) =>
+                            param.type !== baseSignature.parameterTypes[index],
+                    )
+                ) {
+                    throw new Error(
+                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match parameter types of inherited method`,
+                    )
+                }
+
+                if (
+                    callableParams.some(
+                        (param, index) =>
+                            (param.semantics ?? 'const') !==
+                            baseSignature.parameterSemantics[index],
+                    )
+                ) {
+                    throw new Error(
+                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match parameter semantics of inherited method`,
+                    )
+                }
+
+                if (method.visibility !== baseSignature.visibility) {
+                    throw new Error(
+                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must keep visibility '${baseSignature.visibility}'`,
+                    )
+                }
+
+                if (overrideEffectLevel !== baseSignature.effectLevel) {
+                    throw new Error(
+                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match effect level '${baseSignature.effectLevel}', got '${overrideEffectLevel}'`,
+                    )
+                }
+            }
+        }
+    }
+
+    private registerMethodSignatures(
+        ownerKind: 'object' | 'service',
+        ownerType: string,
+        sections: ASTObjectDeclaration['sections'],
+    ) {
+        for (const section of sections) {
+            if (section.kind !== 'methods' && section.kind !== 'mutating') {
+                continue
+            }
+
+            for (const method of section.items) {
+                const callableParams =
+                    method.parameters[0]?.name === 'self'
+                        ? method.parameters.slice(1)
+                        : method.parameters
+                const labels = callableParams.map((param) => param.label ?? '_')
+
+                this.functionSignatures.set(
+                    buildFunctionSignatureKey(method.name, labels, ownerType),
+                    {
+                        name: method.name,
+                        ownerType,
+                        ownerKind,
+                        visibility: method.visibility,
+                        labels,
+                        returnType: method.returnType,
+                        returnSemantics: method.returnSemantics,
+                        arity: callableParams.length,
+                        parameterTypes: callableParams.map(
+                            (param) => param.type,
+                        ),
+                        parameterSemantics: callableParams.map(
+                            (param) => param.semantics ?? 'const',
+                        ),
+                        effectLevel: this.methodEffectLevel(
+                            ownerKind,
+                            section.kind,
+                        ),
+                    },
+                )
+            }
+        }
+    }
+
+    private analyzeTypeMethods(
+        ownerType: string,
+        ownerKind: 'object' | 'service',
+        sections: ASTObjectDeclaration['sections'],
+    ): SemanticFunction[] {
+        const methods: SemanticFunction[] = []
+        for (const section of sections) {
+            if (section.kind !== 'methods' && section.kind !== 'mutating') {
+                continue
+            }
+
+            for (const method of section.items) {
+                const methodAnalyzer = this.createFunctionChildScope(
+                    method.returnType,
+                    ownerType,
+                    ownerKind,
+                    section.kind === 'mutating',
+                )
+                const analyzed =
+                    methodAnalyzer.analyzeFunctionDeclaration(method)
+                const callableParams =
+                    method.parameters[0]?.name === 'self'
+                        ? method.parameters.slice(1)
+                        : method.parameters
+                const labels = callableParams.map((param) => param.label ?? '_')
+                methods.push({
+                    ...analyzed,
+                    name: `${ownerType}·${mangleCallableName(method.name, labels)}`,
+                })
+            }
+        }
+        return methods
+    }
+
+    private validateMethodAssignmentRules(
+        target: ASTExpression,
+        position: { line: number; column: number },
+    ): void {
+        if (!this.currentOwnerType) return
+
+        if (
+            !this.currentMethodMutating &&
+            target.kind === 'binary' &&
+            target.operator === '.'
+        ) {
+            throw new Error(
+                `${position.line}:${position.column}:Immutable method '${this.currentOwnerType}' may not assign to a field`,
+            )
+        }
+
+        if (this.currentOwnerKind !== 'object') return
+
+        const root = this.extractRootIdentifier(target)
+        if (
+            target.kind === 'binary' &&
+            target.operator === '.' &&
+            root &&
+            root.name !== 'self'
+        ) {
+            throw new Error(
+                `${position.line}:${position.column}:Object methods may not mutate external state via '${root.name}'`,
+            )
+        }
+    }
+
+    private validateCallEffects(
+        signature: FunctionSignature,
+        position: { line: number; column: number },
+        callable: { name: string; labels: string[]; ownerType?: string },
+    ): void {
+        const allowed = this.allowedEffectLevel()
+        if (!isEffectLevelAllowed(signature.effectLevel, allowed)) {
+            throw new Error(
+                `${position.line}:${position.column}:Call to '${renderFunctionSignature(callable.name, callable.labels, callable.ownerType)}' is side-effecting (${signature.effectLevel}) and is not allowed in this method context (${allowed})`,
+            )
+        }
+    }
+
+    private allowedEffectLevel(): EffectLevel {
+        if (this.currentOwnerKind === 'service') return 'external'
+        if (this.currentOwnerKind === 'object') {
+            return this.currentMethodMutating ? 'self-mutation' : 'pure'
+        }
+        return 'external'
+    }
+
+    private methodEffectLevel(
+        ownerKind: 'object' | 'service',
+        sectionKind: 'methods' | 'mutating',
+    ): EffectLevel {
+        if (ownerKind === 'service') return 'external'
+        return sectionKind === 'mutating' ? 'self-mutation' : 'pure'
+    }
+
+    private buildCallDispatch(
+        signature: FunctionSignature,
+        methodName: string,
+        labels: string[],
+        receiverType: string,
+    ): {
+        kind: 'direct' | 'virtual'
+        methodName?: string
+        slotName?: string
+        ownerType?: string
+        receiverType?: string
+    } {
+        const slotName = mangleCallableName(methodName, labels)
+        if (
+            signature.ownerKind === 'object' &&
+            signature.visibility === 'public'
+        ) {
+            return {
+                kind: 'virtual',
+                methodName,
+                slotName,
+                ownerType: signature.ownerType,
+                receiverType,
+            }
+        }
+
+        return {
+            kind: 'direct',
+            methodName,
+            slotName,
+            ownerType: signature.ownerType,
+            receiverType,
+        }
+    }
+
+    private registerDataDeclaration(stmt: ASTDataDeclaration) {
+        this.typeKinds.set(stmt.name, 'data')
+        this.dataTypes.set(
+            stmt.name,
+            new Map(
+                stmt.fields.map((field) => [
+                    field.name,
+                    {
+                        type: field.type,
+                        semantics: field.semantics ?? 'mut',
+                        declarationPosition: field.position,
+                    },
+                ]),
+            ),
+        )
+    }
+
+    private annotateDataDeclaration(
+        stmt: ASTDataDeclaration,
+    ): SemanticDataDeclaration {
+        return {
+            ...stmt,
+            fields: stmt.fields.map((field) => ({
+                ...field,
+                isReferenceCounted: this.dataTypes.has(field.type),
+            })),
+        }
+    }
+
+    private lookupDataType(name: string): BindingMap | undefined {
+        const dataType = this.dataTypes.get(name)
+        if (dataType || !this.parent) return dataType
+        return this.parent.lookupDataType(name)
+    }
+
+    private lookupTypeKind(name: string): TypeKind | undefined {
+        const typeKind = this.typeKinds.get(name)
+        if (typeKind || !this.parent) return typeKind
+        return this.parent.lookupTypeKind(name)
+    }
+
+    private lookupObjectSupertype(name: string): string | undefined {
+        const supertype = this.objectSupertypes.get(name)
+        if (supertype || !this.parent) return supertype
+        return this.parent.lookupObjectSupertype(name)
+    }
+
+    private validateDataFieldSemantics(
+        declarations: SemanticDataDeclaration[],
+    ): void {
+        for (const decl of declarations) {
+            for (const field of decl.fields) {
+                const semantics = field.semantics ?? 'mut'
+
+                if (semantics === 'const') {
+                    throw new Error(
+                        `${decl.position.line}:${decl.position.column}:Field '${field.name}' in data type '${decl.name}' cannot use 'const' semantics`,
+                    )
+                }
+
+                if (semantics === 'ref' && !this.isReferenceType(field.type)) {
+                    throw new Error(
+                        `${decl.position.line}:${decl.position.column}:Field '${field.name}' in data type '${decl.name}' cannot use 'ref' semantics with non-reference type '${field.type}'`,
+                    )
+                }
+
+                if (this.isServiceType(field.type)) {
+                    throw new Error(
+                        `${decl.position.line}:${decl.position.column}:Data type '${decl.name}' cannot contain service field '${field.name}' of type '${field.type}'`,
+                    )
+                }
+            }
+        }
+    }
+
+    private validateTypeFieldSemantics(
+        objects: ASTObjectDeclaration[],
+        services: ASTServiceDeclaration[],
+    ): void {
+        for (const objectDecl of objects) {
+            for (const section of objectDecl.sections) {
+                if (section.kind !== 'data') continue
+
+                for (const field of section.fields) {
+                    if (!this.isServiceType(field.type)) continue
+
+                    throw new Error(
+                        `${objectDecl.position.line}:${objectDecl.position.column}:Object '${objectDecl.name}' cannot contain service field '${field.name}' of type '${field.type}'`,
+                    )
+                }
+            }
+        }
+
+        for (const serviceDecl of services) {
+            for (const section of serviceDecl.sections) {
+                if (section.kind !== 'data') continue
+
+                for (const field of section.fields) {
+                    if (!this.isServiceType(field.type)) continue
+                    if (field.semantics === 'ref') continue
+
+                    throw new Error(
+                        `${serviceDecl.position.line}:${serviceDecl.position.column}:Service '${serviceDecl.name}' field '${field.name}' with service type '${field.type}' must use 'ref' semantics`,
+                    )
+                }
+            }
+        }
+    }
+
+    private analyzeVariableDeclaration(
+        stmt: ASTVariableDeclaration,
+    ): SemanticVariableDeclaration {
+        const explicitType = stmt.valueSet?.type
+        const valueSemantics = this.inferExpressionSemantics(stmt.value)
+
+        if (explicitType) {
+            this.validateInitializerAgainstType(stmt.value, explicitType)
+            this.validateServiceVariableSemantics(
+                stmt.name,
+                explicitType,
+                stmt.semantics,
+                stmt.position,
+            )
+            this.declareBinding(
+                stmt.name,
+                {
+                    type: explicitType,
+                    semantics: stmt.semantics,
+                },
+                stmt.position,
+            )
+            const rewrittenValue = this.rewriteExpression(stmt.value)
+
+            this.validateSemanticBoundary(
+                explicitType,
+                stmt.semantics,
+                valueSemantics,
+                rewrittenValue,
+                stmt.position,
+            )
+
+            return {
+                ...stmt,
+                valueSet: { type: explicitType },
+                value: rewrittenValue,
+                ownership: this.buildVariableOwnership(
+                    stmt.name,
+                    explicitType,
+                    rewrittenValue,
+                    stmt.semantics,
+                    valueSemantics,
+                ),
+            }
+        }
+
+        const inferredType = this.inferExpressionType(stmt.value)
+        if (!inferredType) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for variable '${stmt.name}' from '${stmt.value.kind}' initializer`,
+            )
+        }
+
+        this.validateServiceVariableSemantics(
+            stmt.name,
+            inferredType,
+            stmt.semantics,
+            stmt.position,
+        )
+        this.declareBinding(
+            stmt.name,
+            {
+                type: inferredType,
+                semantics: stmt.semantics,
+            },
+            stmt.position,
+        )
+        const rewrittenValue = this.rewriteExpression(stmt.value)
+
+        this.validateSemanticBoundary(
+            inferredType,
+            stmt.semantics,
+            valueSemantics,
+            rewrittenValue,
+            stmt.position,
+        )
+
+        return {
+            ...stmt,
+            valueSet: { type: inferredType },
+            value: rewrittenValue,
+            ownership: this.buildVariableOwnership(
+                stmt.name,
+                inferredType,
+                rewrittenValue,
+                stmt.semantics,
+                valueSemantics,
+            ),
+        }
+    }
+
+    private buildVariableOwnership(
+        name: string,
+        type: string,
+        value: SemanticVariableDeclaration['value'],
+        targetSemantics: ASTVariableDeclaration['semantics'],
+        valueSemantics: ASTVariableDeclaration['semantics'] | null,
+    ): SemanticOwnershipEffects {
+        if (!this.isReferenceType(type)) return {}
+
+        const ownership: SemanticOwnershipEffects = {
+            releaseAtScopeExit: true,
+        }
+
+        if (this.isCopyExpression(value)) {
+            ownership.copyValueSemantics =
+                this.toRuntimeSemanticsFlag(targetSemantics)
+            return ownership
+        }
+
+        ownership.retains =
+            value.kind === 'data-literal' || value.kind === 'array-literal'
+                ? []
+                : [
+                      {
+                          kind: 'identifier',
+                          name,
+                          position: value.position,
+                      },
+                  ]
+
+        return ownership
+    }
+
+    private isReferenceType(type: string): boolean {
+        return Boolean(this.lookupDataType(type)) || this.isArrayType(type)
+    }
+
+    private isServiceType(type: string): boolean {
+        return this.lookupTypeKind(type) === 'service'
+    }
+
+    private validateServiceVariableSemantics(
+        name: string,
+        type: string,
+        semantics: ASTVariableDeclaration['semantics'],
+        position: { line: number; column: number },
+    ): void {
+        if (!this.isServiceType(type)) return
+        if (semantics === 'ref') return
+
+        throw new Error(
+            `${position.line}:${position.column}:Service variable '${name}' must be declared as 'ref', got '${semantics}'`,
+        )
+    }
+
+    private validateServiceFunctionRestrictions(
+        stmt: ASTFunctionDeclaration,
+    ): void {
+        for (const param of stmt.parameters) {
+            if (!this.isServiceType(param.type)) continue
+
+            const isServiceSelfParameter =
+                param.name === 'self' &&
+                this.currentOwnerKind === 'service' &&
+                this.currentOwnerType === param.type
+            if (isServiceSelfParameter) continue
+
+            if (param.semantics !== 'ref') {
+                throw new Error(
+                    `${param.position.line}:${param.position.column}:Service parameter '${param.name}' must use 'ref' semantics`,
+                )
+            }
+        }
+
+        if (!stmt.returnType || !this.isServiceType(stmt.returnType)) return
+        if (stmt.returnSemantics === 'ref') return
+
+        throw new Error(
+            `${stmt.position.line}:${stmt.position.column}:Function '${this.renderDiagnosticFunctionName(stmt)}' returning service type '${stmt.returnType}' must declare '-> ref ${stmt.returnType}'`,
+        )
+    }
+
+    private renderDiagnosticFunctionName(stmt: ASTFunctionDeclaration): string {
+        if (!this.currentOwnerType) return stmt.name
+        return `${this.currentOwnerType}.${stmt.name}`
+    }
+
+    private collectMutateTargets(
+        target: SemanticFieldAccess,
+    ): SemanticFieldAccess['object'][] {
+        const mutates: SemanticFieldAccess['object'][] = []
+
+        const collect = (expr: SemanticFieldAccess['object']) => {
+            mutates.push(expr)
+            if (expr.kind === 'field-access') collect(expr.object)
+        }
+
+        collect(target.object)
+        return mutates.reverse()
+    }
+
+    private validateInitializerAgainstType(
+        value: ASTExpression,
+        expected: string,
+    ) {
+        if (value.kind === 'array-literal') {
+            this.validateArrayLiteral(value, expected)
+            return
+        }
+
+        if (value.kind === 'data-literal') {
+            this.validateDataLiteral(value, expected)
+            return
+        }
+
+        const inferred = this.inferExpressionType(value)
+        if (inferred && !this.isTypeAssignable(inferred, expected)) {
+            throw new Error(
+                `${value.position.line}:${value.position.column}:Type mismatch: expected '${expected}' but got '${inferred}'`,
+            )
+        }
+    }
+
+    private validateDataLiteral(value: ASTDataLiteral, expectedType: string) {
+        const expectedFields = this.lookupAllTypeFields(expectedType)
+        if (!expectedFields) return
+
+        for (const [fieldName, fieldInfo] of expectedFields.entries()) {
+            if (!(fieldName in value.fields)) {
+                const position = fieldInfo.declarationPosition ?? value.position
+                throw new Error(
+                    `${position.line}:${position.column}:Missing field '${fieldName}' for data type '${expectedType}'`,
+                )
+            }
+        }
+
+        for (const [fieldName, fieldValue] of Object.entries(value.fields)) {
+            const expectedFieldInfo = expectedFields.get(fieldName)
+            if (!expectedFieldInfo) {
+                throw new Error(
+                    `${fieldValue.position.line}:${fieldValue.position.column}:Unknown field '${fieldName}' for data type '${expectedType}'`,
+                )
+            }
+
+            const inferredFieldType = this.inferExpressionType(fieldValue)
+            if (
+                !inferredFieldType ||
+                !this.isTypeAssignable(
+                    inferredFieldType,
+                    expectedFieldInfo.type,
+                )
+            ) {
+                throw new Error(
+                    `${fieldValue.position.line}:${fieldValue.position.column}:Type mismatch for field '${fieldName}': expected '${expectedFieldInfo.type}' but got '${inferredFieldType ?? fieldValue.kind}'`,
+                )
+            }
+        }
+    }
+
+    private validateArrayLiteral(
+        value: Extract<ASTExpression, { kind: 'array-literal' }>,
+        expectedType: string,
+    ) {
+        if (!this.isArrayType(expectedType)) {
+            throw new Error(
+                `${value.position.line}:${value.position.column}:Type mismatch: expected '${expectedType}' but got 'array-literal'`,
+            )
+        }
+
+        const elementType = this.arrayElementType(expectedType)
+        if (!elementType) {
+            throw new Error(
+                `${value.position.line}:${value.position.column}:Invalid array type '${expectedType}'`,
+            )
+        }
+
+        for (const element of value.elements) {
+            const inferredElementType = this.inferExpressionType(element)
+            if (
+                !inferredElementType ||
+                !this.isTypeAssignable(inferredElementType, elementType)
+            ) {
+                throw new Error(
+                    `${element.position.line}:${element.position.column}:Type mismatch for array element: expected '${elementType}' but got '${inferredElementType ?? element.kind}'`,
+                )
+            }
+        }
+    }
+
+    private inferExpressionType(value: ASTExpression): string | null {
+        switch (value.kind) {
+            case 'truthvalue':
+                return 'truthvalue'
+            case 'integer':
+                return 'integer'
+            case 'string':
+                return 'string'
+            case 'when': {
+                const subjectType = this.inferExpressionType(value.subject)
+                if (!subjectType) {
+                    throw new Error(
+                        `${value.subject.position.line}:${value.subject.position.column}:Cannot infer type for when subject`,
+                    )
+                }
+
+                if (subjectType === 'string') {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:when does not yet support string subject patterns`,
+                    )
+                }
+
+                if (value.branches.length === 0) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:when requires at least one branch`,
+                    )
+                }
+
+                const wildcardIndex = value.branches.findIndex(
+                    (branch) => branch.pattern.kind === 'wildcard-pattern',
+                )
+                if (wildcardIndex === -1) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:when expression requires a wildcard '_' branch for exhaustiveness`,
+                    )
+                }
+                if (wildcardIndex !== value.branches.length - 1) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Wildcard pattern '_' must be the last branch in when expression`,
+                    )
+                }
+
+                let resultType: string | null = null
+                for (const branch of value.branches) {
+                    if (branch.pattern.kind === 'value-pattern') {
+                        const patternType = this.inferExpressionType(
+                            branch.pattern.value,
+                        )
+                        if (!patternType) {
+                            throw new Error(
+                                `${branch.pattern.position.line}:${branch.pattern.position.column}:Cannot infer type for when pattern`,
+                            )
+                        }
+
+                        if (!this.isTypeAssignable(patternType, subjectType)) {
+                            throw new Error(
+                                `${branch.pattern.position.line}:${branch.pattern.position.column}:when pattern type mismatch: expected '${subjectType}' but got '${patternType}'`,
+                            )
+                        }
+                    }
+
+                    const branchType = this.inferExpressionType(branch.value)
+                    if (!branchType) {
+                        throw new Error(
+                            `${branch.value.position.line}:${branch.value.position.column}:Cannot infer type for when branch value`,
+                        )
+                    }
+
+                    if (!resultType) {
+                        resultType = branchType
+                        continue
+                    }
+
+                    if (!this.isTypeAssignable(branchType, resultType)) {
+                        throw new Error(
+                            `${branch.value.position.line}:${branch.value.position.column}:when branch type mismatch: expected '${resultType}' but got '${branchType}'`,
+                        )
+                    }
+                }
+
+                return resultType
+            }
+            case 'array-literal': {
+                if (value.elements.length === 0) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Cannot infer type for empty array literal; add an explicit annotation`,
+                    )
+                }
+
+                const firstType = this.inferExpressionType(value.elements[0])
+                if (!firstType) {
+                    throw new Error(
+                        `${value.elements[0].position.line}:${value.elements[0].position.column}:Cannot infer type for array element`,
+                    )
+                }
+
+                for (let i = 1; i < value.elements.length; i++) {
+                    const nextType = this.inferExpressionType(value.elements[i])
+                    if (
+                        !nextType ||
+                        !this.isTypeAssignable(nextType, firstType)
+                    ) {
+                        throw new Error(
+                            `${value.elements[i].position.line}:${value.elements[i].position.column}:Array literal element type mismatch: expected '${firstType}' but got '${nextType ?? value.elements[i].kind}'`,
+                        )
+                    }
+                }
+
+                return `[${firstType}]`
+            }
+            case 'call': {
+                const argumentLabels = value.arguments.map(
+                    (arg) => arg.label ?? '_',
+                )
+
+                let signature: FunctionSignature | undefined
+                let calleeName: string
+
+                if (value.callee.kind === 'identifier') {
+                    calleeName = value.callee.name
+                    const calleeBinding = this.lookupBinding(value.callee.name)
+                    if (!calleeBinding) {
+                        throw new Error(
+                            `${value.callee.position.line}:${value.callee.position.column}:Unknown identifier '${value.callee.name}'`,
+                        )
+                    }
+
+                    if (calleeBinding.type !== 'func') {
+                        throw new Error(
+                            `${value.callee.position.line}:${value.callee.position.column}:Cannot call non-function identifier '${value.callee.name}'`,
+                        )
+                    }
+
+                    signature = this.lookupFunctionSignature(
+                        buildFunctionSignatureKey(calleeName, argumentLabels),
+                    )
+
+                    if (!signature) {
+                        const overloads =
+                            this.lookupFunctionSignaturesByName(calleeName)
+                        const suggestion = buildDidYouMeanSignatureHint(
+                            calleeName,
+                            overloads,
+                        )
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Function/method not found '${renderFunctionSignature(calleeName, argumentLabels)}'.${suggestion}`,
+                        )
+                    }
+                } else if (
+                    value.callee.kind === 'binary' &&
+                    value.callee.operator === '.' &&
+                    value.callee.right.kind === 'identifier'
+                ) {
+                    const receiverType = this.inferExpressionType(
+                        value.callee.left,
+                    )
+                    if (!receiverType) {
+                        throw new Error(
+                            `${value.callee.position.line}:${value.callee.position.column}:Cannot infer type for method call receiver`,
+                        )
+                    }
+
+                    calleeName = value.callee.right.name
+                    signature = this.resolveMethodSignature(
+                        receiverType,
+                        calleeName,
+                        argumentLabels,
+                    )
+
+                    if (!signature) {
+                        const overloads = this.lookupFunctionSignaturesByName(
+                            calleeName,
+                            receiverType,
+                        )
+                        const suggestion = buildDidYouMeanSignatureHint(
+                            calleeName,
+                            overloads,
+                            receiverType,
+                        )
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Function/method not found '${renderFunctionSignature(calleeName, argumentLabels, receiverType)}'.${suggestion}`,
+                        )
+                    }
+                } else {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Unsupported call target '${value.callee.kind}'`,
+                    )
+                }
+
+                if (
+                    signature.ownerType &&
+                    signature.visibility === 'helper' &&
+                    this.currentOwnerType !== signature.ownerType
+                ) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Method '${renderFunctionSignature(calleeName, argumentLabels, signature.ownerType)}' is helper and only callable inside '${signature.ownerType}'`,
+                    )
+                }
+
+                this.validateCallEffects(signature, value.position, {
+                    name: calleeName,
+                    labels: argumentLabels,
+                    ownerType: signature.ownerType,
+                })
+
+                // Update current free function's effect level if calling external functions
+                if (
+                    this.currentFunctionEffectLevel !== null &&
+                    signature.effectLevel === 'external'
+                ) {
+                    this.currentFunctionEffectLevel = 'external'
+                }
+
+                if (value.arguments.length !== signature.arity) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Function '${calleeName}' expects ${signature.arity} argument(s), got ${value.arguments.length}`,
+                    )
+                }
+
+                for (const arg of value.arguments) {
+                    this.inferExpressionType(arg.value)
+                }
+
+                for (let i = 0; i < value.arguments.length; i++) {
+                    const actualType = this.inferExpressionType(
+                        value.arguments[i].value,
+                    )
+                    const expectedType = signature.parameterTypes[i]
+
+                    if (
+                        actualType &&
+                        expectedType !== undefined &&
+                        !this.isTypeAssignable(actualType, expectedType)
+                    ) {
+                        throw new Error(
+                            `${value.arguments[i].value.position.line}:${value.arguments[i].value.position.column}:Argument ${i + 1} type mismatch for function '${calleeName}': expected '${expectedType}' but got '${actualType}'`,
+                        )
+                    }
+                }
+
+                if (signature.returnType === undefined) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Function '${calleeName}' has no return type and cannot be used as a value`,
+                    )
+                }
+
+                return signature.returnType
+            }
+            case 'identifier': {
+                const binding = this.lookupBinding(value.name)
+                if (!binding) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Unknown identifier '${value.name}'`,
+                    )
+                }
+                return binding.type
+            }
+            case 'binary': {
+                if (value.operator === '[]') {
+                    const arrayType = this.inferExpressionType(value.left)
+                    if (!arrayType || !this.isArrayType(arrayType)) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Indexing expects an array value, got '${arrayType ?? value.left.kind}'`,
+                        )
+                    }
+
+                    const indexType = this.inferExpressionType(value.right)
+                    if (indexType !== 'integer') {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Array index must be integer, got '${indexType ?? value.right.kind}'`,
+                        )
+                    }
+
+                    const elementType = this.arrayElementType(arrayType)
+                    if (!elementType) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Invalid array type '${arrayType}'`,
+                        )
+                    }
+
+                    return elementType
+                }
+
+                if (value.operator === '+') {
+                    const leftType = this.inferExpressionType(value.left)
+                    const rightType = this.inferExpressionType(value.right)
+
+                    if (!leftType || !rightType) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Cannot infer operand type for '+'`,
+                        )
+                    }
+
+                    if (leftType === 'string' && rightType === 'string') {
+                        return 'string'
+                    }
+
+                    if (leftType === 'integer' && rightType === 'integer') {
+                        return 'integer'
+                    }
+
+                    if (
+                        leftType !== 'string' &&
+                        leftType !== 'integer' &&
+                        rightType !== 'string' &&
+                        rightType !== 'integer'
+                    ) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Operator '+' expects string or integer operands, got '${leftType}' and '${rightType}'`,
+                        )
+                    }
+
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Operator '+' requires matching operand types, got '${leftType}' and '${rightType}'`,
+                    )
+                }
+
+                if (
+                    value.operator === '-' ||
+                    value.operator === '*' ||
+                    value.operator === '/'
+                ) {
+                    const leftType = this.inferExpressionType(value.left)
+                    const rightType = this.inferExpressionType(value.right)
+
+                    if (leftType !== 'integer' || rightType !== 'integer') {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' expects integer operands, got '${leftType}' and '${rightType}'`,
+                        )
+                    }
+
+                    return 'integer'
+                }
+
+                if (value.operator === '==' || value.operator === '!=') {
+                    const leftType = this.inferExpressionType(value.left)
+                    const rightType = this.inferExpressionType(value.right)
+
+                    if (!leftType || !rightType) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Cannot infer operand type for '${value.operator}'`,
+                        )
+                    }
+
+                    if (leftType !== rightType) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' requires matching operand types, got '${leftType}' and '${rightType}'`,
+                        )
+                    }
+
+                    return 'truthvalue'
+                }
+
+                if (
+                    value.operator === '<' ||
+                    value.operator === '<=' ||
+                    value.operator === '>' ||
+                    value.operator === '>='
+                ) {
+                    const leftType = this.inferExpressionType(value.left)
+                    const rightType = this.inferExpressionType(value.right)
+
+                    if (leftType !== 'integer' || rightType !== 'integer') {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' expects integer operands, got '${leftType}' and '${rightType}'`,
+                        )
+                    }
+
+                    return 'truthvalue'
+                }
+
+                if (value.operator === '&&' || value.operator === '||') {
+                    const leftType = this.inferExpressionType(value.left)
+                    const rightType = this.inferExpressionType(value.right)
+
+                    if (
+                        leftType !== 'truthvalue' ||
+                        rightType !== 'truthvalue'
+                    ) {
+                        throw new Error(
+                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' expects truthvalue operands, got '${leftType}' and '${rightType}'`,
+                        )
+                    }
+
+                    return 'truthvalue'
+                }
+
+                if (value.operator !== '.') return null
+                if (value.right.kind !== 'identifier') return null
+                const objectType = this.inferExpressionType(value.left)
+                if (!objectType) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Cannot infer type for dot access object`,
+                    )
+                }
+                if (!this.lookupDataType(objectType)) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Cannot resolve field '${value.right.name}' on non-data type '${objectType}'`,
+                    )
+                }
+                const fieldInfo = this.lookupFieldInfo(
+                    objectType,
+                    value.right.name,
+                )
+                if (!fieldInfo) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Unknown field '${value.right.name}' on data type '${objectType}'`,
+                    )
+                }
+                return fieldInfo.type
+            }
+            case 'copy': {
+                const copiedType = this.inferExpressionType(value.value)
+                if (!copiedType) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Cannot infer type for copy value`,
+                    )
+                }
+                if (!this.isReferenceType(copiedType)) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:copy(...) expects a reference-counted value, got '${copiedType}'`,
+                    )
+                }
+                return copiedType
+            }
+            case 'data-literal':
+                return null
+            default:
+                return null
+        }
+    }
+
+    private validateAssignmentMutationSemantics(target: ASTExpression): void {
+        if (target.kind === 'identifier') {
+            this.assertIdentifierIsMutable(target, target.position)
+            return
+        }
+
+        if (target.kind === 'binary' && target.operator === '.') {
+            const rootIdentifier = this.extractRootIdentifier(target)
+            if (!rootIdentifier) {
+                throw new Error(
+                    `${target.position.line}:${target.position.column}:Invalid field assignment target`,
+                )
+            }
+
+            const binding = this.lookupBinding(rootIdentifier.name)
+            if (!binding) {
+                throw new Error(
+                    `${rootIdentifier.position.line}:${rootIdentifier.position.column}:Unknown identifier '${rootIdentifier.name}'`,
+                )
+            }
+
+            if (binding.semantics === 'const') {
+                throw new Error(
+                    `${rootIdentifier.position.line}:${rootIdentifier.position.column}:Cannot mutate field through const variable '${rootIdentifier.name}'`,
+                )
+            }
+        }
+    }
+
+    private inferExpressionSemantics(
+        value: ASTExpression,
+    ): ASTVariableDeclaration['semantics'] | null {
+        switch (value.kind) {
+            case 'call':
+                return null
+            case 'when':
+                return null
+            case 'array-literal':
+                return null
+            case 'identifier': {
+                const binding = this.lookupBinding(value.name)
+                if (!binding) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Unknown identifier '${value.name}'`,
+                    )
+                }
+                return binding.semantics
+            }
+            case 'binary': {
+                if (value.operator === '[]') return null
+                if (value.operator === '+') return null
+                if (value.operator !== '.') return null
+                if (value.right.kind !== 'identifier') return null
+                const objectType = this.inferExpressionType(value.left)
+                if (!objectType) return null
+                const fieldInfo = this.lookupFieldInfo(
+                    objectType,
+                    value.right.name,
+                )
+                if (!fieldInfo) return null
+                return fieldInfo.semantics
+            }
+            case 'copy':
+                return null
+            default:
+                return null
+        }
+    }
+
+    private toRuntimeSemanticsFlag(
+        semantics: ASTVariableDeclaration['semantics'] | null,
+    ): '__rc_ISOLATED' | '__rc_SHARED' {
+        return semantics === 'ref' ? '__rc_SHARED' : '__rc_ISOLATED'
+    }
+
+    private requiresSemanticCopy(
+        targetSemantics: ASTVariableDeclaration['semantics'] | null,
+        valueSemantics: ASTVariableDeclaration['semantics'] | null,
+    ): boolean {
+        if (!targetSemantics || !valueSemantics) return false
+        return (
+            this.toRuntimeSemanticsFlag(targetSemantics) !==
+            this.toRuntimeSemanticsFlag(valueSemantics)
+        )
+    }
+
+    private validateSemanticBoundary(
+        targetType: string,
+        targetSemantics: ASTVariableDeclaration['semantics'] | null,
+        valueSemantics: ASTVariableDeclaration['semantics'] | null,
+        rewrittenValue:
+            | SemanticAssignment['value']
+            | SemanticVariableDeclaration['value'],
+        position: { line: number; column: number },
+    ): void {
+        if (!this.isReferenceType(targetType)) return
+        if (!this.requiresSemanticCopy(targetSemantics, valueSemantics)) return
+        if (this.isCopyExpression(rewrittenValue)) return
+
+        const suggestionExpr = this.formatCopySuggestionValue(rewrittenValue)
+
+        throw new Error(
+            `${position.line}:${position.column}:Cross-semantics assignment requires explicit copy(...). Use copy(${suggestionExpr}) to state intent.`,
+        )
+    }
+
+    private formatCopySuggestionValue(
+        value:
+            | SemanticAssignment['value']
+            | SemanticVariableDeclaration['value'],
+    ): string {
+        switch (value.kind) {
+            case 'identifier':
+                return value.name
+            case 'field-access':
+                return `${this.formatCopySuggestionValue(value.object)}.${value.field}`
+            default:
+                return 'value'
+        }
+    }
+
+    private isCopyExpression(
+        value:
+            | SemanticAssignment['value']
+            | SemanticVariableDeclaration['value'],
+    ): value is SemanticCopyExpression {
+        return value.kind === 'copy'
+    }
+
+    private assertIdentifierIsMutable(
+        identifier: ASTIdentifier,
+        position: { line: number; column: number },
+    ): void {
+        const binding = this.lookupBinding(identifier.name)
+        if (!binding) {
+            throw new Error(
+                `${position.line}:${position.column}:Unknown identifier '${identifier.name}'`,
+            )
+        }
+
+        if (binding.semantics === 'const') {
+            throw new Error(
+                `${position.line}:${position.column}:Cannot assign to const variable '${identifier.name}'`,
+            )
+        }
+    }
+
+    private extractRootIdentifier(expr: ASTExpression): ASTIdentifier | null {
+        if (expr.kind === 'identifier') return expr
+        if (expr.kind === 'binary' && expr.operator === '.') {
+            return this.extractRootIdentifier(expr.left)
+        }
+        return null
+    }
+
+    private declareBinding(
+        name: string,
+        binding: {
+            type: string
+            semantics: ASTVariableDeclaration['semantics']
+        },
+        position: { line: number; column: number },
+    ): void {
+        if (this.bindings.has(name)) {
+            throw new Error(
+                `${position.line}:${position.column}:Variable '${name}' is already declared in this scope`,
+            )
+        }
+
+        this.bindings.set(name, binding)
+    }
+
+    private lookupBinding(name: string): VariableBinding | undefined {
+        const binding = this.bindings.get(name)
+        if (binding || !this.parent) return binding
+        return this.parent.lookupBinding(name)
+    }
+
+    private lookupFunctionSignature(
+        signatureKey: string,
+    ): FunctionSignature | undefined {
+        const signature = this.functionSignatures.get(signatureKey)
+        if (signature || !this.parent) return signature
+        return this.parent.lookupFunctionSignature(signatureKey)
+    }
+
+    private lookupFunctionSignaturesByName(
+        name: string,
+        ownerType?: string,
+    ): FunctionSignature[] {
+        const ownerTypes =
+            ownerType === undefined
+                ? undefined
+                : [ownerType, ...this.collectObjectSupertypeChain(ownerType)]
+        const signatures = Array.from(this.functionSignatures.values()).filter(
+            (signature) => {
+                if (signature.name !== name) return false
+                if (ownerType === undefined) {
+                    return signature.ownerType === undefined
+                }
+
+                return (
+                    signature.ownerType !== undefined &&
+                    ownerTypes?.includes(signature.ownerType)
+                )
+            },
+        )
+
+        if (signatures.length > 0 || !this.parent) return signatures
+        return this.parent.lookupFunctionSignaturesByName(name, ownerType)
+    }
+
+    private resolveMethodSignature(
+        receiverType: string,
+        methodName: string,
+        labels: string[],
+    ): FunctionSignature | undefined {
+        const ownerTypes = [
+            receiverType,
+            ...this.collectObjectSupertypeChain(receiverType),
+        ]
+
+        for (const ownerType of ownerTypes) {
+            const signature = this.lookupFunctionSignature(
+                buildFunctionSignatureKey(methodName, labels, ownerType),
+            )
+            if (signature) {
+                return signature
+            }
+        }
+
+        return undefined
+    }
+
+    private lookupInheritedMethodSignature(
+        ownerType: string | undefined,
+        methodName: string,
+        labels: string[],
+    ): FunctionSignature | undefined {
+        if (!ownerType) return undefined
+
+        const signature = this.lookupFunctionSignature(
+            buildFunctionSignatureKey(methodName, labels, ownerType),
+        )
+        if (signature?.visibility === 'public') {
+            return signature
+        }
+
+        return this.lookupInheritedMethodSignature(
+            this.lookupObjectSupertype(ownerType),
+            methodName,
+            labels,
+        )
+    }
+
+    private collectObjectSupertypeChain(name: string): string[] {
+        const chain: string[] = []
+        const seen = new Set<string>()
+        let current = this.lookupObjectSupertype(name)
+
+        while (current && !seen.has(current)) {
+            chain.push(current)
+            seen.add(current)
+            current = this.lookupObjectSupertype(current)
+        }
+
+        return chain
+    }
+
+    private isTypeAssignable(actual: string, expected: string): boolean {
+        if (actual === expected) return true
+
+        let current = this.lookupObjectSupertype(actual)
+        while (current) {
+            if (current === expected) {
+                return true
+            }
+            current = this.lookupObjectSupertype(current)
+        }
+
+        return false
+    }
+
+    private isArrayType(type: string): boolean {
+        return /^\[[^\]]+\]$/.test(type)
+    }
+
+    private arrayElementType(type: string): string | null {
+        const match = type.match(/^\[([^\]]+)\]$/)
+        return match ? match[1] : null
+    }
+
+    private lookupAllTypeFields(typeName: string): BindingMap | undefined {
+        const directFields = this.lookupDataType(typeName)
+        const kind = this.lookupTypeKind(typeName)
+
+        if (kind !== 'object') return directFields
+
+        const merged = new Map<string, VariableBinding>()
+        const lineage: string[] = []
+        let current: string | undefined = typeName
+        while (current) {
+            lineage.push(current)
+            current = this.lookupObjectSupertype(current)
+        }
+
+        lineage.reverse()
+        for (const name of lineage) {
+            const fields = this.lookupDataType(name)
+            if (!fields) continue
+            for (const [fieldName, fieldInfo] of fields.entries()) {
+                merged.set(fieldName, fieldInfo)
+            }
+        }
+
+        return merged
+    }
+
+    private lookupFieldInfo(
+        typeName: string,
+        fieldName: string,
+    ): VariableBinding | undefined {
+        const allFields = this.lookupAllTypeFields(typeName)
+        return allFields?.get(fieldName)
+    }
+}
+
+type VariableBinding = {
+    type: string
+    semantics: ASTVariableDeclaration['semantics']
+    declarationPosition?: { line: number; column: number }
+}
+
+type BindingMap = Map<string, VariableBinding>
+
+type TypeKind = 'data' | 'object' | 'service'
+
+type EffectLevel = 'pure' | 'self-mutation' | 'external'
+
+type FunctionSignature = {
+    name: string
+    ownerType?: string
+    ownerKind?: 'object' | 'service'
+    visibility: 'public' | 'helper'
+    labels: string[]
+    returnType?: string
+    returnSemantics?: 'const' | 'ref'
+    arity: number
+    parameterTypes: string[]
+    parameterSemantics: Array<'const' | 'mut' | 'ref'>
+    effectLevel: EffectLevel
+}
+
+function effectRank(level: EffectLevel): number {
+    switch (level) {
+        case 'pure':
+            return 0
+        case 'self-mutation':
+            return 1
+        case 'external':
+            return 2
+    }
+}
+
+function isEffectLevelAllowed(
+    actual: EffectLevel,
+    allowed: EffectLevel,
+): boolean {
+    return effectRank(actual) <= effectRank(allowed)
+}
+
+function buildFunctionSignatureKey(
+    name: string,
+    labels: string[],
+    ownerType?: string,
+): string {
+    const qualifier = ownerType ? `${ownerType}.` : ''
+    return `${qualifier}${name}(${labels.join(':')})`
+}
+
+function renderFunctionSignature(
+    name: string,
+    labels: string[],
+    ownerType?: string,
+): string {
+    const qualifier = ownerType ? `${ownerType}.` : ''
+    if (labels.length === 0) {
+        return `${qualifier}${name}()`
+    }
+    return `${qualifier}${name}(${labels.join(':')}:)`
+}
+
+function buildDidYouMeanSignatureHint(
+    name: string,
+    signatures: FunctionSignature[],
+    ownerType?: string,
+): string {
+    if (signatures.length === 0) return ''
+    const first = signatures[0]
+    return ` Did you mean '${renderFunctionSignature(name, first.labels, ownerType ?? first.ownerType)}'?`
+}
+
+function mangleCallableName(name: string, labels: string[]): string {
+    const suffix = labels
+        .filter((label) => label !== '_')
+        .map((label) => `__${label}`)
+        .join('')
+    return `${name}${suffix}`
+}
