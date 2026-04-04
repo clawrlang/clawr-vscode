@@ -478,7 +478,15 @@ export function activate(context: vscode.ExtensionContext): void {
             },
         },
     )
-    context.subscriptions.push(definitionProvider)
+    const referenceProvider = vscode.languages.registerReferenceProvider(
+        'clawr',
+        {
+            async provideReferences(document, position, context) {
+                return provideClawrReferences(document, position, context)
+            },
+        },
+    )
+    context.subscriptions.push(definitionProvider, referenceProvider)
 
     let diagnosticsDisposable: vscode.Disposable | undefined
     const updateDiagnosticsRegistration = (): void => {
@@ -1203,4 +1211,656 @@ function nameToLocation(
 
     const range = new vscode.Range(line, nameChar, line, nameChar + name.length)
     return new vscode.Location(vscode.Uri.file(filePath), range)
+}
+
+type LocalSymbolTarget = {
+    name: string
+    declaration: ScopedDecl
+    func: ASTFunctionDeclaration
+    owner?: ASTObjectDeclaration | ASTServiceDeclaration
+}
+
+async function provideClawrReferences(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    context: vscode.ReferenceContext,
+): Promise<vscode.Location[]> {
+    const wordRange = document.getWordRangeAtPosition(
+        position,
+        /[A-Za-z_][A-Za-z0-9_]*/,
+    )
+    if (!wordRange) return []
+
+    const symbol = document.getText(wordRange)
+    const source = document.getText()
+    const program = parseProgram(source, document.uri.fsPath)
+    if (!program) return []
+
+    const targetLine = wordRange.start.line + 1
+    const targetColumn = wordRange.start.character + 1
+
+    const localTarget = findLocalScopedTarget(
+        program,
+        symbol,
+        document.uri.fsPath,
+        targetLine,
+        targetColumn,
+    )
+    if (localTarget) {
+        return collectLocalScopedReferences(
+            document.uri.fsPath,
+            localTarget,
+            context.includeDeclaration,
+        )
+    }
+
+    const definition = await provideClawrDefinition(document, position)
+    if (!definition) return []
+
+    const results: vscode.Location[] = []
+    if (context.includeDeclaration) {
+        results.push(definition)
+    }
+
+    for (const pos of collectIdentifierPositions(program, symbol)) {
+        results.push(
+            nameToLocation(document.uri.fsPath, symbol, pos.line, pos.column),
+        )
+    }
+
+    return dedupeLocations(results)
+}
+
+function dedupeLocations(locations: vscode.Location[]): vscode.Location[] {
+    const seen = new Set<string>()
+    const result: vscode.Location[] = []
+
+    for (const loc of locations) {
+        const key = `${loc.uri.toString()}#${loc.range.start.line}:${loc.range.start.character}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        result.push(loc)
+    }
+
+    return result
+}
+
+function findLocalScopedTarget(
+    program: ASTProgram,
+    symbol: string,
+    filePath: string,
+    targetLine: number,
+    targetColumn: number,
+): LocalSymbolTarget | null {
+    for (const context of collectFunctionContexts(program)) {
+        const target = resolveLocalTargetInFunction(
+            context.func,
+            context.owner,
+            symbol,
+            targetLine,
+            targetColumn,
+            filePath,
+            program.body,
+        )
+        if (target) return target
+    }
+    return null
+}
+
+function resolveLocalTargetInFunction(
+    func: ASTFunctionDeclaration,
+    owner: ASTObjectDeclaration | ASTServiceDeclaration | undefined,
+    symbol: string,
+    targetLine: number,
+    targetColumn: number,
+    filePath: string,
+    topLevelBody: ASTStatement[],
+): LocalSymbolTarget | null {
+    const scopes: Array<Map<string, ScopedDecl>> = [new Map()]
+    const declare = (name: string, line: number, column: number): void => {
+        scopes[scopes.length - 1].set(name, { name, line, column })
+    }
+    const lookup = (name: string): ScopedDecl | null => {
+        for (let i = scopes.length - 1; i >= 0; i--) {
+            const hit = scopes[i].get(name)
+            if (hit) return hit
+        }
+        return null
+    }
+    const withScope = <T>(work: () => T): T => {
+        scopes.push(new Map())
+        try {
+            return work()
+        } finally {
+            scopes.pop()
+        }
+    }
+
+    for (const param of func.parameters) {
+        declare(param.name, param.position.line, param.position.column)
+        const lineText = tryReadLine(filePath, param.position.line)
+        if (param.label && symbol === param.label) {
+            const labelStart = Math.max(1, param.position.column)
+            const labelEnd = labelStart + param.label.length - 1
+            if (
+                targetLine === param.position.line &&
+                targetColumn >= labelStart &&
+                targetColumn <= labelEnd
+            ) {
+                return {
+                    name: param.name,
+                    declaration: {
+                        name: param.name,
+                        line: param.position.line,
+                        column:
+                            findInternalParameterColumn(
+                                lineText,
+                                param.label,
+                                param.name,
+                            ) ?? param.position.column,
+                    },
+                    func,
+                    owner,
+                }
+            }
+        }
+    }
+
+    if (owner) {
+        declare('self', owner.position.line, owner.position.column)
+        if (owner.kind === 'object-decl' && owner.supertype) {
+            const superDecl = findTopLevelDeclaration(
+                topLevelBody,
+                owner.supertype,
+            )
+            if (superDecl) {
+                declare(
+                    'super',
+                    superDecl.position.line,
+                    superDecl.position.column,
+                )
+            } else {
+                declare('super', owner.position.line, owner.position.column)
+            }
+        }
+    }
+
+    for (const param of func.parameters) {
+        if (param.name === symbol) {
+            const nameColumn = param.label
+                ? (findInternalParameterColumn(
+                      tryReadLine(filePath, param.position.line),
+                      param.label,
+                      param.name,
+                  ) ?? param.position.column)
+                : param.position.column
+
+            const start = Math.max(1, nameColumn)
+            const end = start + param.name.length - 1
+            if (
+                targetLine === param.position.line &&
+                targetColumn >= start &&
+                targetColumn <= end
+            ) {
+                return {
+                    name: param.name,
+                    declaration: {
+                        name: param.name,
+                        line: param.position.line,
+                        column: start,
+                    },
+                    func,
+                    owner,
+                }
+            }
+        }
+    }
+
+    const checkIdentifier = (
+        name: string,
+        line: number,
+        column: number,
+    ): LocalSymbolTarget | null => {
+        if (name !== symbol || line !== targetLine || column !== targetColumn) {
+            return null
+        }
+        const decl = lookup(name)
+        if (!decl) return null
+        return { name, declaration: decl, func, owner }
+    }
+
+    const walkExpression = (expr: ASTExpression): LocalSymbolTarget | null => {
+        switch (expr.kind) {
+            case 'identifier':
+                return checkIdentifier(
+                    expr.name,
+                    expr.position.line,
+                    expr.position.column,
+                )
+            case 'binary':
+                return walkExpression(expr.left) ?? walkExpression(expr.right)
+            case 'call': {
+                const callee = walkExpression(expr.callee)
+                if (callee) return callee
+                for (const arg of expr.arguments) {
+                    const hit = walkExpression(arg.value)
+                    if (hit) return hit
+                }
+                return null
+            }
+            case 'copy':
+                return walkExpression(expr.value)
+            case 'array-literal':
+                for (const el of expr.elements) {
+                    const hit = walkExpression(el)
+                    if (hit) return hit
+                }
+                return null
+            case 'data-literal':
+                for (const val of Object.values(expr.fields)) {
+                    const hit = walkExpression(val)
+                    if (hit) return hit
+                }
+                return null
+            case 'when': {
+                const subject = walkExpression(expr.subject)
+                if (subject) return subject
+                for (const branch of expr.branches) {
+                    if (branch.pattern.kind === 'value-pattern') {
+                        const p = walkExpression(branch.pattern.value)
+                        if (p) return p
+                    }
+                    const v = walkExpression(branch.value)
+                    if (v) return v
+                }
+                return null
+            }
+            default:
+                return null
+        }
+    }
+
+    const walkStatements = (
+        statements: ASTStatement[],
+    ): LocalSymbolTarget | null => {
+        for (const stmt of statements) {
+            switch (stmt.kind) {
+                case 'var-decl': {
+                    const inValue = walkExpression(stmt.value)
+                    if (inValue) return inValue
+
+                    if (stmt.name === symbol) {
+                        const start = stmt.position.column
+                        const end = start + stmt.name.length - 1
+                        if (
+                            stmt.position.line === targetLine &&
+                            targetColumn >= start &&
+                            targetColumn <= end
+                        ) {
+                            return {
+                                name: stmt.name,
+                                declaration: {
+                                    name: stmt.name,
+                                    line: stmt.position.line,
+                                    column: stmt.position.column,
+                                },
+                                func,
+                                owner,
+                            }
+                        }
+                    }
+
+                    declare(stmt.name, stmt.position.line, stmt.position.column)
+                    break
+                }
+                case 'assign': {
+                    const inTarget = walkExpression(stmt.target)
+                    if (inTarget) return inTarget
+                    const inValue = walkExpression(stmt.value)
+                    if (inValue) return inValue
+                    break
+                }
+                case 'print': {
+                    const inValue = walkExpression(stmt.value)
+                    if (inValue) return inValue
+                    break
+                }
+                case 'return': {
+                    if (stmt.value) {
+                        const inValue = walkExpression(stmt.value)
+                        if (inValue) return inValue
+                    }
+                    break
+                }
+                case 'if': {
+                    const inCondition = walkExpression(stmt.condition)
+                    if (inCondition) return inCondition
+                    const inThen = withScope(() =>
+                        walkStatements(stmt.thenBranch),
+                    )
+                    if (inThen) return inThen
+                    if (stmt.elseBranch) {
+                        const inElse = withScope(() =>
+                            walkStatements(stmt.elseBranch!),
+                        )
+                        if (inElse) return inElse
+                    }
+                    break
+                }
+                case 'while': {
+                    const inCondition = walkExpression(stmt.condition)
+                    if (inCondition) return inCondition
+                    const inBody = withScope(() => walkStatements(stmt.body))
+                    if (inBody) return inBody
+                    break
+                }
+                case 'for-in': {
+                    const inIterable = walkExpression(stmt.iterable)
+                    if (inIterable) return inIterable
+                    const inBody = withScope(() => {
+                        declare(
+                            stmt.loopVar,
+                            stmt.position.line,
+                            stmt.position.column,
+                        )
+                        return walkStatements(stmt.body)
+                    })
+                    if (inBody) return inBody
+                    break
+                }
+                default:
+                    break
+            }
+        }
+        return null
+    }
+
+    if (func.body.kind === 'expression') {
+        return walkExpression(func.body.value)
+    }
+
+    return walkStatements(func.body.statements)
+}
+
+function collectLocalScopedReferences(
+    filePath: string,
+    target: LocalSymbolTarget,
+    includeDeclaration: boolean,
+): vscode.Location[] {
+    const scopes: Array<Map<string, ScopedDecl>> = [new Map()]
+    const refs: vscode.Location[] = []
+
+    const declare = (name: string, line: number, column: number): void => {
+        scopes[scopes.length - 1].set(name, { name, line, column })
+    }
+    const lookup = (name: string): ScopedDecl | null => {
+        for (let i = scopes.length - 1; i >= 0; i--) {
+            const hit = scopes[i].get(name)
+            if (hit) return hit
+        }
+        return null
+    }
+    const withScope = (work: () => void): void => {
+        scopes.push(new Map())
+        try {
+            work()
+        } finally {
+            scopes.pop()
+        }
+    }
+    const isTargetDecl = (decl: ScopedDecl | null): boolean => {
+        return (
+            !!decl &&
+            decl.name === target.declaration.name &&
+            decl.line === target.declaration.line &&
+            decl.column === target.declaration.column
+        )
+    }
+    const addRef = (name: string, line: number, column: number): void => {
+        refs.push(nameToLocation(filePath, name, line, column))
+    }
+
+    for (const param of target.func.parameters) {
+        declare(param.name, param.position.line, param.position.column)
+    }
+    if (target.owner) {
+        declare(
+            'self',
+            target.owner.position.line,
+            target.owner.position.column,
+        )
+        if (target.owner.kind === 'object-decl' && target.owner.supertype) {
+            declare(
+                'super',
+                target.owner.position.line,
+                target.owner.position.column,
+            )
+        }
+    }
+
+    if (includeDeclaration) {
+        addRef(
+            target.declaration.name,
+            target.declaration.line,
+            target.declaration.column,
+        )
+    }
+
+    const walkExpression = (expr: ASTExpression): void => {
+        switch (expr.kind) {
+            case 'identifier': {
+                const decl = lookup(expr.name)
+                if (isTargetDecl(decl)) {
+                    addRef(expr.name, expr.position.line, expr.position.column)
+                }
+                return
+            }
+            case 'binary':
+                walkExpression(expr.left)
+                walkExpression(expr.right)
+                return
+            case 'call':
+                walkExpression(expr.callee)
+                for (const arg of expr.arguments) walkExpression(arg.value)
+                return
+            case 'copy':
+                walkExpression(expr.value)
+                return
+            case 'array-literal':
+                for (const el of expr.elements) walkExpression(el)
+                return
+            case 'data-literal':
+                for (const val of Object.values(expr.fields))
+                    walkExpression(val)
+                return
+            case 'when':
+                walkExpression(expr.subject)
+                for (const branch of expr.branches) {
+                    if (branch.pattern.kind === 'value-pattern') {
+                        walkExpression(branch.pattern.value)
+                    }
+                    walkExpression(branch.value)
+                }
+                return
+            default:
+                return
+        }
+    }
+
+    const walkStatements = (statements: ASTStatement[]): void => {
+        for (const stmt of statements) {
+            switch (stmt.kind) {
+                case 'var-decl': {
+                    walkExpression(stmt.value)
+                    declare(stmt.name, stmt.position.line, stmt.position.column)
+                    if (
+                        includeDeclaration &&
+                        stmt.name === target.declaration.name &&
+                        stmt.position.line === target.declaration.line &&
+                        stmt.position.column === target.declaration.column
+                    ) {
+                        addRef(
+                            stmt.name,
+                            stmt.position.line,
+                            stmt.position.column,
+                        )
+                    }
+                    break
+                }
+                case 'assign':
+                    walkExpression(stmt.target)
+                    walkExpression(stmt.value)
+                    break
+                case 'print':
+                    walkExpression(stmt.value)
+                    break
+                case 'return':
+                    if (stmt.value) walkExpression(stmt.value)
+                    break
+                case 'if':
+                    walkExpression(stmt.condition)
+                    withScope(() => walkStatements(stmt.thenBranch))
+                    if (stmt.elseBranch) {
+                        withScope(() => walkStatements(stmt.elseBranch!))
+                    }
+                    break
+                case 'while':
+                    walkExpression(stmt.condition)
+                    withScope(() => walkStatements(stmt.body))
+                    break
+                case 'for-in':
+                    walkExpression(stmt.iterable)
+                    withScope(() => {
+                        declare(
+                            stmt.loopVar,
+                            stmt.position.line,
+                            stmt.position.column,
+                        )
+                        walkStatements(stmt.body)
+                    })
+                    break
+                default:
+                    break
+            }
+        }
+    }
+
+    if (target.func.body.kind === 'expression') {
+        walkExpression(target.func.body.value)
+    } else {
+        walkStatements(target.func.body.statements)
+    }
+
+    return dedupeLocations(refs)
+}
+
+function collectIdentifierPositions(
+    program: ASTProgram,
+    symbol: string,
+): Array<{ line: number; column: number }> {
+    const positions: Array<{ line: number; column: number }> = []
+
+    const walkExpression = (expr: ASTExpression): void => {
+        switch (expr.kind) {
+            case 'identifier':
+                if (expr.name === symbol) {
+                    positions.push({
+                        line: expr.position.line,
+                        column: expr.position.column,
+                    })
+                }
+                return
+            case 'binary':
+                walkExpression(expr.left)
+                walkExpression(expr.right)
+                return
+            case 'call':
+                walkExpression(expr.callee)
+                for (const arg of expr.arguments) walkExpression(arg.value)
+                return
+            case 'copy':
+                walkExpression(expr.value)
+                return
+            case 'array-literal':
+                for (const el of expr.elements) walkExpression(el)
+                return
+            case 'data-literal':
+                for (const val of Object.values(expr.fields))
+                    walkExpression(val)
+                return
+            case 'when':
+                walkExpression(expr.subject)
+                for (const branch of expr.branches) {
+                    if (branch.pattern.kind === 'value-pattern') {
+                        walkExpression(branch.pattern.value)
+                    }
+                    walkExpression(branch.value)
+                }
+                return
+            default:
+                return
+        }
+    }
+
+    const walkStatements = (statements: ASTStatement[]): void => {
+        for (const stmt of statements) {
+            switch (stmt.kind) {
+                case 'var-decl':
+                    walkExpression(stmt.value)
+                    break
+                case 'assign':
+                    walkExpression(stmt.target)
+                    walkExpression(stmt.value)
+                    break
+                case 'print':
+                    walkExpression(stmt.value)
+                    break
+                case 'return':
+                    if (stmt.value) walkExpression(stmt.value)
+                    break
+                case 'if':
+                    walkExpression(stmt.condition)
+                    walkStatements(stmt.thenBranch)
+                    if (stmt.elseBranch) walkStatements(stmt.elseBranch)
+                    break
+                case 'while':
+                    walkExpression(stmt.condition)
+                    walkStatements(stmt.body)
+                    break
+                case 'for-in':
+                    walkExpression(stmt.iterable)
+                    walkStatements(stmt.body)
+                    break
+                case 'func-decl':
+                    if (stmt.body.kind === 'expression') {
+                        walkExpression(stmt.body.value)
+                    } else {
+                        walkStatements(stmt.body.statements)
+                    }
+                    break
+                case 'object-decl':
+                case 'service-decl':
+                    for (const section of stmt.sections) {
+                        if (
+                            section.kind === 'methods' ||
+                            section.kind === 'mutating'
+                        ) {
+                            for (const method of section.items) {
+                                if (method.body.kind === 'expression') {
+                                    walkExpression(method.body.value)
+                                } else {
+                                    walkStatements(method.body.statements)
+                                }
+                            }
+                        }
+                    }
+                    break
+                default:
+                    break
+            }
+        }
+    }
+
+    walkStatements(program.body)
+    return positions
 }
