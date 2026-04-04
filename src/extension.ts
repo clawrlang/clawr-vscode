@@ -18,9 +18,35 @@ import { resolveImportPath } from './semantic-analyzer/module-graph'
 import { collectTopLevelBoundIdentifierPositions } from './references/top-level-bound-positions'
 
 const semanticTokensLegend = new vscode.SemanticTokensLegend(
-    ['keyword', 'number', 'string', 'regexp', 'variable', 'operator'],
+    [
+        'keyword',
+        'number',
+        'string',
+        'regexp',
+        'variable',
+        'operator',
+        'class',
+        'struct',
+        'type',
+    ],
     ['declaration'],
 )
+
+type DeclTypeKeyword =
+    | 'data'
+    | 'object'
+    | 'service'
+    | 'enum'
+    | 'union'
+    | 'role'
+    | 'trait'
+
+type SemanticClassifierState = {
+    expectTypeDeclarationName: boolean
+    pendingTypeDeclarationKind: DeclTypeKeyword | null
+    expectTypeReference: boolean
+    knownTypeNames: Set<string>
+}
 
 type SemanticTokenStopReason =
     | 'completed'
@@ -270,6 +296,12 @@ class ClawrSemanticTokenProvider
         let tokenCount = 0
         let lastLine = -1
         let lastEndChar = -1
+        const classifierState: SemanticClassifierState = {
+            expectTypeDeclarationName: false,
+            pendingTypeDeclarationKind: null,
+            expectTypeReference: false,
+            knownTypeNames: new Set<string>(),
+        }
 
         try {
             // Only get text from the requested range, or full document if no range
@@ -309,7 +341,10 @@ class ClawrSemanticTokenProvider
                     break
                 }
 
-                const [typeIdx, modBits] = this.tokenToLegend(tok)
+                const [typeIdx, modBits] = this.tokenToLegend(
+                    tok,
+                    classifierState,
+                )
                 if (typeIdx !== -1) {
                     const line = tok.line - 1 + startLine
                     const startChar = tok.column - 1
@@ -358,7 +393,10 @@ class ClawrSemanticTokenProvider
         return builder.build()
     }
 
-    private tokenToLegend(tok: any): [typeIdx: number, modBits: number] {
+    private tokenToLegend(
+        tok: any,
+        state: SemanticClassifierState,
+    ): [typeIdx: number, modBits: number] {
         const typeMap: { [key: string]: number } = {
             keyword: 0,
             number: 1,
@@ -366,6 +404,9 @@ class ClawrSemanticTokenProvider
             regexp: 3,
             variable: 4,
             operator: 5,
+            class: 6,
+            struct: 7,
+            type: 8,
         }
 
         const modMap: { [key: string]: number } = {
@@ -382,30 +423,99 @@ class ClawrSemanticTokenProvider
                 mods.forEach((mod) => {
                     modBits |= 1 << modMap[mod]
                 })
+
+                if (this.isTypeDeclarationKeyword(tok.keyword)) {
+                    state.expectTypeDeclarationName = true
+                    state.pendingTypeDeclarationKind = tok.keyword
+                } else if (tok.keyword !== 'helper') {
+                    state.expectTypeDeclarationName = false
+                    state.pendingTypeDeclarationKind = null
+                }
                 break
             case 'IDENTIFIER':
-                typeIdx = typeMap['variable']
+                if (
+                    state.expectTypeDeclarationName &&
+                    state.pendingTypeDeclarationKind
+                ) {
+                    const typeToken = this.declarationKindToIdentifierType(
+                        state.pendingTypeDeclarationKind,
+                    )
+                    typeIdx = typeMap[typeToken]
+                    modBits |= 1 << modMap['declaration']
+                    state.knownTypeNames.add(tok.identifier)
+                    state.expectTypeDeclarationName = false
+                    state.pendingTypeDeclarationKind = null
+                    state.expectTypeReference = false
+                    break
+                }
+
+                if (
+                    state.expectTypeReference &&
+                    state.knownTypeNames.has(tok.identifier)
+                ) {
+                    typeIdx = typeMap['type']
+                } else {
+                    typeIdx = typeMap['variable']
+                }
+
+                state.expectTypeReference = false
                 break
             case 'STRING_LITERAL':
                 typeIdx = typeMap['string']
+                state.expectTypeReference = false
                 break
             case 'REGEX_LITERAL':
                 typeIdx = typeMap['regexp']
+                state.expectTypeReference = false
                 break
             case 'INTEGER_LITERAL':
             case 'REAL_LITERAL':
             case 'TRUTH_LITERAL':
                 typeIdx = typeMap['number']
+                state.expectTypeReference = false
                 break
             case 'OPERATOR':
                 typeIdx = typeMap['operator']
+                if (tok.operator !== '.') {
+                    state.expectTypeReference = false
+                }
                 break
             case 'PUNCTUATION':
                 typeIdx = typeMap['operator']
+                if (tok.symbol === ':' || tok.symbol === '->') {
+                    state.expectTypeReference = true
+                } else if (tok.symbol !== ',' && tok.symbol !== ')') {
+                    state.expectTypeReference = false
+                }
+                break
+            case 'NEWLINE':
+                state.expectTypeReference = false
                 break
         }
 
         return [typeIdx, modBits]
+    }
+
+    private isTypeDeclarationKeyword(
+        keyword: string,
+    ): keyword is DeclTypeKeyword {
+        return (
+            keyword === 'data' ||
+            keyword === 'object' ||
+            keyword === 'service' ||
+            keyword === 'enum' ||
+            keyword === 'union' ||
+            keyword === 'role' ||
+            keyword === 'trait'
+        )
+    }
+
+    private declarationKindToIdentifierType(
+        kind: DeclTypeKeyword,
+    ): 'class' | 'struct' | 'type' {
+        if (kind === 'data') return 'struct'
+        if (kind === 'object' || kind === 'service') return 'class'
+        return 'type'
     }
 
     private getKeywordModifiers(keyword: string): string[] {
