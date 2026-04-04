@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import fs from 'node:fs'
+import path from 'node:path'
 import { TokenStream } from './lexer'
 import { Parser } from './parser'
 import type {
@@ -1257,10 +1258,23 @@ async function provideClawrReferences(
     const definition = await provideClawrDefinition(document, position)
     if (!definition) return []
 
-    const results: vscode.Location[] = []
-    if (context.includeDeclaration) {
-        results.push(definition)
+    const topLevelTarget = resolveTopLevelReferenceTarget(
+        program,
+        document.uri.fsPath,
+        symbol,
+        definition,
+    )
+
+    if (topLevelTarget) {
+        return collectTopLevelModuleReferences(
+            document,
+            topLevelTarget,
+            context.includeDeclaration,
+        )
     }
+
+    const results: vscode.Location[] = []
+    if (context.includeDeclaration) results.push(definition)
 
     for (const pos of collectIdentifierPositions(program, symbol)) {
         results.push(
@@ -1269,6 +1283,209 @@ async function provideClawrReferences(
     }
 
     return dedupeLocations(results)
+}
+
+type TopLevelReferenceTarget = {
+    declarationFile: string
+    declarationName: string
+}
+
+function resolveTopLevelReferenceTarget(
+    program: ASTProgram,
+    currentFile: string,
+    symbol: string,
+    definition: vscode.Location,
+): TopLevelReferenceTarget | null {
+    const currentAbs = path.resolve(currentFile)
+
+    for (const imp of program.imports) {
+        let importedFile: string
+        try {
+            importedFile = resolveImportPath(currentAbs, imp.modulePath)
+        } catch {
+            continue
+        }
+
+        for (const item of imp.items) {
+            const importedName = item.alias ?? item.name
+            if (importedName !== symbol) continue
+
+            const definitionAbs = path.resolve(definition.uri.fsPath)
+            if (definitionAbs !== importedFile) continue
+
+            return {
+                declarationFile: importedFile,
+                declarationName: item.name,
+            }
+        }
+    }
+
+    if (findTopLevelDeclaration(program.body, symbol)) {
+        return {
+            declarationFile: currentAbs,
+            declarationName: symbol,
+        }
+    }
+
+    if (!definition.uri.fsPath) {
+        return null
+    }
+
+    const definitionProgram = readProgramFromFile(definition.uri.fsPath)
+    if (!definitionProgram) {
+        return null
+    }
+
+    const definitionLine = definition.range.start.line + 1
+    const targetDecl = findTopLevelDeclarationByLine(
+        definitionProgram.body,
+        definitionLine,
+    )
+    if (!targetDecl) {
+        return null
+    }
+
+    return {
+        declarationFile: path.resolve(definition.uri.fsPath),
+        declarationName: targetDecl.name,
+    }
+}
+
+async function collectTopLevelModuleReferences(
+    currentDocument: vscode.TextDocument,
+    target: TopLevelReferenceTarget,
+    includeDeclaration: boolean,
+): Promise<vscode.Location[]> {
+    const locations: vscode.Location[] = []
+    const declarationFile = path.resolve(target.declarationFile)
+
+    const uris = await vscode.workspace.findFiles(
+        '**/*.clawr',
+        '**/{node_modules,dist,out,.git}/**',
+    )
+
+    const allFiles = new Set<string>(
+        uris.map((uri) => path.resolve(uri.fsPath)),
+    )
+    allFiles.add(declarationFile)
+    allFiles.add(path.resolve(currentDocument.uri.fsPath))
+
+    for (const filePath of allFiles) {
+        const source = await readWorkspaceFileText(filePath, currentDocument)
+        if (!source) continue
+
+        const program = parseProgram(source, filePath)
+        if (!program) continue
+
+        const boundNames = new Set<string>()
+
+        const localDecl = findTopLevelDeclaration(
+            program.body,
+            target.declarationName,
+        )
+        if (path.resolve(filePath) === declarationFile && localDecl) {
+            if (includeDeclaration) {
+                locations.push(declarationToLocation(filePath, localDecl))
+            }
+            boundNames.add(target.declarationName)
+        }
+
+        for (const imp of program.imports) {
+            let importedFile: string
+            try {
+                importedFile = resolveImportPath(filePath, imp.modulePath)
+            } catch {
+                continue
+            }
+
+            if (path.resolve(importedFile) !== declarationFile) continue
+
+            for (const item of imp.items) {
+                if (item.name !== target.declarationName) continue
+
+                const localName = item.alias ?? item.name
+                boundNames.add(localName)
+                locations.push(
+                    nameToLocation(
+                        filePath,
+                        localName,
+                        item.position.line,
+                        item.position.column,
+                    ),
+                )
+            }
+        }
+
+        for (const name of boundNames) {
+            for (const pos of collectIdentifierPositions(program, name)) {
+                locations.push(
+                    nameToLocation(filePath, name, pos.line, pos.column),
+                )
+            }
+        }
+    }
+
+    return dedupeLocations(locations)
+}
+
+function readProgramFromFile(filePath: string): ASTProgram | null {
+    try {
+        const source = fs.readFileSync(filePath, 'utf-8')
+        return parseProgram(source, filePath)
+    } catch {
+        return null
+    }
+}
+
+function findTopLevelDeclarationByLine(
+    body: ASTStatement[],
+    line: number,
+):
+    | ASTDataDeclaration
+    | ASTFunctionDeclaration
+    | ASTObjectDeclaration
+    | ASTServiceDeclaration
+    | ASTVariableDeclaration
+    | null {
+    for (const stmt of body) {
+        const isTopLevelDecl =
+            stmt.kind === 'data-decl' ||
+            stmt.kind === 'func-decl' ||
+            stmt.kind === 'object-decl' ||
+            stmt.kind === 'service-decl' ||
+            stmt.kind === 'var-decl'
+
+        if (isTopLevelDecl && stmt.position.line === line) {
+            return stmt
+        }
+    }
+
+    return null
+}
+
+async function readWorkspaceFileText(
+    filePath: string,
+    currentDocument: vscode.TextDocument,
+): Promise<string | null> {
+    const absolute = path.resolve(filePath)
+    if (path.resolve(currentDocument.uri.fsPath) === absolute) {
+        return currentDocument.getText()
+    }
+
+    const openDoc = vscode.workspace.textDocuments.find(
+        (doc) =>
+            doc.uri.scheme === 'file' &&
+            path.resolve(doc.uri.fsPath) === absolute,
+    )
+    if (openDoc) {
+        return openDoc.getText()
+    }
+
+    try {
+        return await fs.promises.readFile(absolute, 'utf-8')
+    } catch {
+        return null
+    }
 }
 
 function dedupeLocations(locations: vscode.Location[]): vscode.Location[] {
