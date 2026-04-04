@@ -60,6 +60,11 @@
           "type": "boolean",
           "default": false,
           "description": "Enable lexer-based semantic tokens. Can impact editor responsiveness on large or frequently changing files."
+        },
+        "clawr.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable parser diagnostics while editing Clawr files."
         }
       }
     },

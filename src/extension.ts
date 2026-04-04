@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import { TokenStream } from './lexer'
+import { Parser } from './parser'
 
 const semanticTokensLegend = new vscode.SemanticTokensLegend(
     [
@@ -248,6 +249,32 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(hello)
 
+    let diagnosticsDisposable: vscode.Disposable | undefined
+    const updateDiagnosticsRegistration = (): void => {
+        diagnosticsDisposable?.dispose()
+        diagnosticsDisposable = undefined
+
+        const diagnosticsEnabled = vscode.workspace
+            .getConfiguration('clawr')
+            .get<boolean>('diagnostics.enabled', true)
+
+        if (diagnosticsEnabled) {
+            diagnosticsDisposable = registerDiagnostics()
+            context.subscriptions.push(diagnosticsDisposable)
+        }
+    }
+
+    updateDiagnosticsRegistration()
+
+    const configListener = vscode.workspace.onDidChangeConfiguration(
+        (event) => {
+            if (event.affectsConfiguration('clawr.diagnostics.enabled')) {
+                updateDiagnosticsRegistration()
+            }
+        },
+    )
+    context.subscriptions.push(configListener)
+
     const config = vscode.workspace.getConfiguration('clawr')
     const semanticTokensEnabled = config.get<boolean>(
         'semanticTokens.enabled',
@@ -268,3 +295,123 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
+
+function registerDiagnostics(): vscode.Disposable {
+    const diagnostics = vscode.languages.createDiagnosticCollection('clawr')
+    const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    const diagnosticRunId = new Map<string, number>()
+
+    const runDiagnostics = (document: vscode.TextDocument): void => {
+        if (document.languageId !== 'clawr') return
+
+        const key = document.uri.toString()
+        const previousTimer = pendingTimers.get(key)
+        if (previousTimer) {
+            clearTimeout(previousTimer)
+        }
+
+        const nextRun = (diagnosticRunId.get(key) ?? 0) + 1
+        diagnosticRunId.set(key, nextRun)
+
+        const timer = setTimeout(() => {
+            pendingTimers.delete(key)
+
+            if (diagnosticRunId.get(key) !== nextRun) return
+
+            // Keep diagnostics lightweight and non-blocking for very large files.
+            if (document.lineCount > 2000) {
+                diagnostics.delete(document.uri)
+                return
+            }
+
+            try {
+                const source = document.getText()
+                const parser = new Parser(
+                    new TokenStream(source, document.uri.fsPath),
+                )
+                parser.parse()
+                diagnostics.delete(document.uri)
+            } catch (error) {
+                diagnostics.set(document.uri, [toDiagnostic(error, document)])
+            }
+        }, 250)
+
+        pendingTimers.set(key, timer)
+    }
+
+    const openListener = vscode.workspace.onDidOpenTextDocument((doc) => {
+        runDiagnostics(doc)
+    })
+
+    const changeListener = vscode.workspace.onDidChangeTextDocument((event) => {
+        runDiagnostics(event.document)
+    })
+
+    const closeListener = vscode.workspace.onDidCloseTextDocument((doc) => {
+        const key = doc.uri.toString()
+        const timer = pendingTimers.get(key)
+        if (timer) {
+            clearTimeout(timer)
+            pendingTimers.delete(key)
+        }
+        diagnosticRunId.delete(key)
+        diagnostics.delete(doc.uri)
+    })
+
+    const active = vscode.window.activeTextEditor?.document
+    if (active) {
+        runDiagnostics(active)
+    }
+
+    return new vscode.Disposable(() => {
+        for (const timer of pendingTimers.values()) {
+            clearTimeout(timer)
+        }
+        pendingTimers.clear()
+        diagnosticRunId.clear()
+        diagnostics.clear()
+        diagnostics.dispose()
+        openListener.dispose()
+        changeListener.dispose()
+        closeListener.dispose()
+    })
+}
+
+function toDiagnostic(
+    error: unknown,
+    document: vscode.TextDocument,
+): vscode.Diagnostic {
+    const message = error instanceof Error ? error.message : String(error)
+
+    // Expected formats:
+    // file:line:column:message
+    // line:column:message
+    const withFile = /^(.*):(\d+):(\d+):(.*)$/.exec(message)
+    const lineColOnly = /^(\d+):(\d+):(.*)$/.exec(message)
+
+    let line = 0
+    let column = 0
+    let text = message
+
+    if (withFile) {
+        line = Math.max(0, Number.parseInt(withFile[2], 10) - 1)
+        column = Math.max(0, Number.parseInt(withFile[3], 10) - 1)
+        text = withFile[4].trim() || message
+    } else if (lineColOnly) {
+        line = Math.max(0, Number.parseInt(lineColOnly[1], 10) - 1)
+        column = Math.max(0, Number.parseInt(lineColOnly[2], 10) - 1)
+        text = lineColOnly[3].trim() || message
+    }
+
+    if (line >= document.lineCount) {
+        line = Math.max(0, document.lineCount - 1)
+        column = 0
+    }
+
+    const lineText = document.lineAt(line).text
+    const safeColumn = Math.min(column, lineText.length)
+    const endColumn = Math.min(safeColumn + 1, lineText.length)
+    const range = new vscode.Range(line, safeColumn, line, endColumn)
+
+    return new vscode.Diagnostic(range, text, vscode.DiagnosticSeverity.Error)
+}
