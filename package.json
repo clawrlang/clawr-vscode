@@ -25,7 +25,15 @@
         ],
         "extensions": [
           ".clawr"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "clawr",
+        "scopeName": "source.clawr",
+        "path": "./syntaxes/clawr.tmLanguage.json"
       }
     ],
     "commands": [
