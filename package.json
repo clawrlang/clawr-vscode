@@ -36,6 +36,23 @@
         "path": "./syntaxes/clawr.tmLanguage.json"
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "keyword",
+        "superType": "keyword",
+        "description": "Clawr keywords"
+      },
+      {
+        "id": "number",
+        "superType": "number",
+        "description": "Numeric literals"
+      },
+      {
+        "id": "operator",
+        "superType": "operator",
+        "description": "Operators and punctuation"
+      }
+    ],
     "commands": [
       {
         "command": "clawr.hello",
