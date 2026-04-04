@@ -1,6 +1,17 @@
 import * as vscode from 'vscode'
+import fs from 'node:fs'
 import { TokenStream } from './lexer'
 import { Parser } from './parser'
+import type {
+    ASTDataDeclaration,
+    ASTFunctionDeclaration,
+    ASTObjectDeclaration,
+    ASTProgram,
+    ASTServiceDeclaration,
+    ASTStatement,
+    ASTVariableDeclaration,
+} from './ast'
+import { resolveImportPath } from './semantic-analyzer/module-graph'
 
 const semanticTokensLegend = new vscode.SemanticTokensLegend(
     ['keyword', 'number', 'string', 'regexp', 'variable', 'operator'],
@@ -457,6 +468,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(hello, showSemanticStats, showDiagnosticsStats)
 
+    const definitionProvider = vscode.languages.registerDefinitionProvider(
+        'clawr',
+        {
+            async provideDefinition(document, position) {
+                return provideClawrDefinition(document, position)
+            },
+        },
+    )
+    context.subscriptions.push(definitionProvider)
+
     let diagnosticsDisposable: vscode.Disposable | undefined
     const updateDiagnosticsRegistration = (): void => {
         diagnosticsDisposable?.dispose()
@@ -672,4 +693,116 @@ function toDiagnostic(
     const range = new vscode.Range(line, safeColumn, line, endColumn)
 
     return new vscode.Diagnostic(range, text, vscode.DiagnosticSeverity.Error)
+}
+
+async function provideClawrDefinition(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+): Promise<vscode.Location | null> {
+    const wordRange = document.getWordRangeAtPosition(
+        position,
+        /[A-Za-z_][A-Za-z0-9_]*/,
+    )
+    if (!wordRange) return null
+
+    const symbol = document.getText(wordRange)
+    const source = document.getText()
+    const program = parseProgram(source, document.uri.fsPath)
+    if (!program) return null
+
+    const local = findTopLevelDeclaration(program.body, symbol)
+    if (local) {
+        return declarationToLocation(document.uri.fsPath, local)
+    }
+
+    for (const imp of program.imports) {
+        for (const item of imp.items) {
+            const importedName = item.alias ?? item.name
+            if (importedName !== symbol) continue
+
+            const targetFile = resolveImportPath(
+                document.uri.fsPath,
+                imp.modulePath,
+            )
+            const targetSource = await fs.promises.readFile(targetFile, 'utf-8')
+            const targetProgram = parseProgram(targetSource, targetFile)
+            if (!targetProgram) continue
+
+            const targetDecl = findTopLevelDeclaration(
+                targetProgram.body,
+                item.name,
+            )
+            if (targetDecl) {
+                return declarationToLocation(targetFile, targetDecl)
+            }
+        }
+    }
+
+    return null
+}
+
+function parseProgram(source: string, filePath: string): ASTProgram | null {
+    try {
+        return new Parser(new TokenStream(source, filePath)).parse()
+    } catch {
+        return null
+    }
+}
+
+function findTopLevelDeclaration(
+    body: ASTStatement[],
+    symbol: string,
+):
+    | ASTDataDeclaration
+    | ASTFunctionDeclaration
+    | ASTObjectDeclaration
+    | ASTServiceDeclaration
+    | ASTVariableDeclaration
+    | null {
+    for (const stmt of body) {
+        if (stmt.kind === 'data-decl' && stmt.name === symbol) return stmt
+        if (stmt.kind === 'func-decl' && stmt.name === symbol) return stmt
+        if (stmt.kind === 'object-decl' && stmt.name === symbol) return stmt
+        if (stmt.kind === 'service-decl' && stmt.name === symbol) return stmt
+        if (stmt.kind === 'var-decl' && stmt.name === symbol) return stmt
+    }
+    return null
+}
+
+function declarationToLocation(
+    filePath: string,
+    declaration:
+        | ASTDataDeclaration
+        | ASTFunctionDeclaration
+        | ASTObjectDeclaration
+        | ASTServiceDeclaration
+        | ASTVariableDeclaration,
+): vscode.Location {
+    const line = Math.max(0, declaration.position.line - 1)
+    const fallbackChar = Math.max(0, declaration.position.column - 1)
+    let nameChar = fallbackChar
+
+    try {
+        const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/)
+        const lineText = lines[line] ?? ''
+        const fromDeclaration = lineText.indexOf(declaration.name, fallbackChar)
+        nameChar =
+            fromDeclaration >= 0
+                ? fromDeclaration
+                : Math.max(0, lineText.indexOf(declaration.name))
+
+        if (nameChar < 0) {
+            nameChar = fallbackChar
+        }
+    } catch {
+        nameChar = fallbackChar
+    }
+
+    const range = new vscode.Range(
+        line,
+        nameChar,
+        line,
+        nameChar + declaration.name.length,
+    )
+    return new vscode.Location(vscode.Uri.file(filePath), range)
 }
