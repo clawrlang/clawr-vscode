@@ -53,6 +53,16 @@
         "description": "Operators and punctuation"
       }
     ],
+    "configuration": {
+      "title": "Clawr",
+      "properties": {
+        "clawr.semanticTokens.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable lexer-based semantic tokens. Can impact editor responsiveness on large or frequently changing files."
+        }
+      }
+    },
     "commands": [
       {
         "command": "clawr.hello",
