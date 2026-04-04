@@ -268,7 +268,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const configListener = vscode.workspace.onDidChangeConfiguration(
         (event) => {
-            if (event.affectsConfiguration('clawr.diagnostics.enabled')) {
+            if (
+                event.affectsConfiguration('clawr.diagnostics.enabled') ||
+                event.affectsConfiguration('clawr.diagnostics.maxLines')
+            ) {
                 updateDiagnosticsRegistration()
             }
         },
@@ -318,8 +321,12 @@ function registerDiagnostics(): vscode.Disposable {
 
             if (diagnosticRunId.get(key) !== nextRun) return
 
+            const maxLines = vscode.workspace
+                .getConfiguration('clawr')
+                .get<number>('diagnostics.maxLines', 2000)
+
             // Keep diagnostics lightweight and non-blocking for very large files.
-            if (document.lineCount > 2000) {
+            if (document.lineCount > maxLines) {
                 diagnostics.delete(document.uri)
                 return
             }

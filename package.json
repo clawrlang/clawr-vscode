@@ -65,6 +65,12 @@
           "type": "boolean",
           "default": true,
           "description": "Enable parser diagnostics while editing Clawr files."
+        },
+        "clawr.diagnostics.maxLines": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 50,
+          "description": "Maximum file length for parser diagnostics. Files above this line count are skipped to preserve responsiveness."
         }
       }
     },
