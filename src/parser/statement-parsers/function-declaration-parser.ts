@@ -61,8 +61,9 @@ export class FunctionDeclarationParser {
         while (!this.stream.isNext('PUNCTUATION', '}')) {
             const stmt = bodyParser.parseStatement()
             if (!stmt) {
+                const token = this.stream.peek()
                 throw new Error(
-                    `Unexpected token in function body: ${JSON.stringify(this.stream.peek())}`,
+                    `${token?.line ?? '?'}:${token?.column ?? '?'}:Unexpected token in function body: ${JSON.stringify(token)}`,
                 )
             }
             statements.push(stmt)

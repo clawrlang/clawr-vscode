@@ -729,7 +729,7 @@ describe('Object and service declaration tests', () => {
 
     it('parses an object with methods then a data section', () => {
         const ast = parse(
-            'object Money { func dollars(self: const Money) -> integer { } data: const cents: integer }',
+            'object Money { func dollars() -> integer { } data: const cents: integer }',
         )
         const decl = ast.body[0]
         expect(decl).toMatchObject({ kind: 'object-decl', name: 'Money' })
@@ -746,7 +746,7 @@ describe('Object and service declaration tests', () => {
 
     it('parses an object with a mutating section', () => {
         const ast = parse(
-            'object Account { mutating: func deposit(self: ref Account, amount: integer) { } }',
+            'object Account { mutating: func deposit(amount: integer) { } }',
         )
         const decl = ast.body[0]
         expect(decl).toMatchObject({ kind: 'object-decl', name: 'Account' })
@@ -805,7 +805,7 @@ describe('Object and service declaration tests', () => {
 
     it('parses a service with default and mutating sections', () => {
         const ast = parse(
-            'service Repo { func getUser(self: const Repo, id: integer) -> User { } mutating: func updateUser(self: ref Repo, user: User) { } }',
+            'service Repo { func getUser(id: integer) -> User { } mutating: func updateUser(user: User) { } }',
         )
         const decl = ast.body[0]
         expect(decl).toMatchObject({ kind: 'service-decl', name: 'Repo' })
@@ -817,6 +817,19 @@ describe('Object and service declaration tests', () => {
         expect(decl.sections[1]).toMatchObject({
             kind: 'mutating',
             items: [{ kind: 'func-decl', name: 'updateUser' }],
+        })
+    })
+
+    it('parses an object with an inheritance section', () => {
+        const ast = parse(
+            'object Entity { inheritance: func id() -> integer { return 1 } data: value: integer }',
+        )
+        const decl = ast.body[0]
+        expect(decl).toMatchObject({ kind: 'object-decl', name: 'Entity' })
+        if (decl.kind !== 'object-decl') throw new Error('unreachable')
+        expect(decl.sections[0]).toMatchObject({
+            kind: 'inheritance',
+            items: [{ kind: 'func-decl', name: 'id' }],
         })
     })
 

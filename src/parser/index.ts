@@ -173,8 +173,9 @@ export class Parser {
         while (!this.stream.isNext('PUNCTUATION', '}')) {
             const stmt = this.parseStatement()
             if (!stmt) {
+                const token = this.stream.peek()
                 throw new Error(
-                    `Unexpected token in block: ${JSON.stringify(this.stream.peek())}`,
+                    `${token?.line ?? '?'}:${token?.column ?? '?'}:Unexpected token in block: ${JSON.stringify(token)}`,
                 )
             }
 

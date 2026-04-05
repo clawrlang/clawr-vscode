@@ -810,17 +810,25 @@ describe('SemanticAnalyzer', () => {
 
     describe('method constraints', () => {
         it('rejects immutable methods without a return type', () => {
-            expect(() =>
-                analyze('object Counter { func id(self: const Counter) { } }'),
-            ).toThrow(
+            expect(() => analyze('object Counter { func id() { } }')).toThrow(
                 "Immutable method 'Counter.id' must declare a return type",
+            )
+        })
+
+        it('rejects explicit self parameters in methods', () => {
+            expect(() =>
+                analyze(
+                    'object Counter { func id(self: const Counter) -> truthvalue { return true } }',
+                ),
+            ).toThrow(
+                "Parameter name 'self' is reserved for the implicit receiver and may not be declared explicitly",
             )
         })
 
         it('rejects immutable methods assigning to self fields', () => {
             expect(() =>
                 analyze(
-                    'data Box { value: truthvalue }\nobject Counter { func set(self: ref Counter, b: ref Box) -> truthvalue { b.value = true\nreturn true } }',
+                    'data Box { value: truthvalue }\nobject Counter { func set(b: ref Box) -> truthvalue { b.value = true\nreturn true } }',
                 ),
             ).toThrow("Immutable method 'Counter' may not assign to a field")
         })
@@ -828,7 +836,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects object methods mutating external state', () => {
             expect(() =>
                 analyze(
-                    'data Box { value: truthvalue }\nobject Counter { mutating: func leak(self: ref Counter, b: ref Box) { b.value = true } }\nconst box: Box = { value: false }\nconst counter: Counter = { }',
+                    'data Box { value: truthvalue }\nobject Counter { mutating: func leak(b: ref Box) { b.value = true } }\nconst box: Box = { value: false }\nconst counter: Counter = { }',
                 ),
             ).toThrow("Object methods may not mutate external state via 'b'")
         })
@@ -836,7 +844,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects print statements in object methods as external side-effects', () => {
             expect(() =>
                 analyze(
-                    'object Counter { mutating: func log(self: ref Counter) { print true } }',
+                    'object Counter { mutating: func log() { print true } }',
                 ),
             ).toThrow(
                 'Object methods may not perform external side-effects (print)',
@@ -845,7 +853,7 @@ describe('SemanticAnalyzer', () => {
 
         it('allows calling pure free functions from immutable object methods', () => {
             const module = analyze(
-                'func ping() -> truthvalue { return true }\nobject Counter { func ok(self: const Counter) -> truthvalue { return ping() } }',
+                'func ping() -> truthvalue { return true }\nobject Counter { func ok() -> truthvalue { return ping() } }',
             )
 
             expect(module.objects).toMatchObject([{ name: 'Counter' }])
@@ -854,14 +862,14 @@ describe('SemanticAnalyzer', () => {
         it('rejects calling free functions with side effects from immutable object methods', () => {
             expect(() =>
                 analyze(
-                    'func poke() -> truthvalue { print true\nreturn true }\nobject Counter { func ok(self: const Counter) -> truthvalue { return poke() } }',
+                    'func poke() -> truthvalue { print true\nreturn true }\nobject Counter { func ok() -> truthvalue { return poke() } }',
                 ),
             ).toThrow("Call to 'poke()' is side-effecting (external)")
         })
 
         it('allows calling pure object methods from mutating object methods', () => {
             const module = analyze(
-                'object Counter { func id(self: const Counter) -> truthvalue { return true } mutating: func tick(self: ref Counter, c: const Counter) -> truthvalue { return c.id() } }',
+                'object Counter { func id() -> truthvalue { return true } mutating: func tick(c: const Counter) -> truthvalue { return c.id() } }',
             )
 
             expect(module.objects).toMatchObject([{ name: 'Counter' }])
@@ -870,7 +878,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects mutating object methods calling service methods (external effects)', () => {
             expect(() =>
                 analyze(
-                    'service Clock { func now(self: const Clock) -> truthvalue { return true } }\nobject Counter { mutating: func tick(self: ref Counter, c: ref Clock) -> truthvalue { return c.now() } }',
+                    'service Clock { func now() -> truthvalue { return true } }\nobject Counter { mutating: func tick(c: ref Clock) -> truthvalue { return c.now() } }',
                 ),
             ).toThrow("Call to 'Clock.now()' is side-effecting (external)")
         })
@@ -894,14 +902,16 @@ describe('SemanticAnalyzer', () => {
         })
 
         it('rejects cyclic object inheritance', () => {
-            expect(() => analyze('object A: B { }\nobject B: A { }')).toThrow(
-                "1:1:Cyclic inheritance involving 'A'",
-            )
+            expect(() =>
+                analyze(
+                    'object A: B { inheritance: }\nobject B: A { inheritance: }',
+                ),
+            ).toThrow("1:1:Cyclic inheritance involving 'A'")
         })
 
         it('allows calling inherited methods on subtype values', () => {
             const module = analyze(
-                'object Entity { func id(self: const Entity) -> truthvalue { return true } }\nobject Student: Entity { }\nconst student: Student = { }\nconst id: truthvalue = student.id()',
+                'object Entity { inheritance: func id() -> truthvalue { return true } }\nobject Student: Entity { }\nconst student: Student = { }\nconst id: truthvalue = student.id()',
             )
 
             expect(module.functions[0].body).toMatchObject([
@@ -933,7 +943,7 @@ describe('SemanticAnalyzer', () => {
 
         it('allows assigning subtype values to supertype variables', () => {
             const module = analyze(
-                'object Entity { }\nobject Student: Entity { }\nconst student: Student = { }\nconst entity: Entity = student',
+                'object Entity { inheritance: }\nobject Student: Entity { }\nconst student: Student = { }\nconst entity: Entity = student',
             )
 
             expect(module.functions[0].body).toMatchObject([
@@ -953,7 +963,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects overrides with incompatible return types', () => {
             expect(() =>
                 analyze(
-                    'object Entity { func id(self: const Entity) -> truthvalue { return true } }\nobject Student: Entity { func id(self: const Student) -> integer { return 1 } }',
+                    'object Entity { inheritance: func id() -> truthvalue { return true } }\nobject Student: Entity { func id() -> integer { return 1 } }',
                 ),
             ).toThrow(
                 "2:26:Override 'Student.id()' must match return type 'truthvalue', got 'integer'",
@@ -963,7 +973,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects overrides with incompatible effect levels', () => {
             expect(() =>
                 analyze(
-                    'object Entity { func id(self: const Entity) -> truthvalue { return true } }\nobject Student: Entity { mutating: func id(self: ref Student) -> truthvalue { return true } }',
+                    'object Entity { inheritance: func id() -> truthvalue { return true } }\nobject Student: Entity { mutating: func id() -> truthvalue { return true } }',
                 ),
             ).toThrow(
                 "2:36:Override 'Student.id()' must match effect level 'pure', got 'self-mutation'",
@@ -973,7 +983,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects overrides with incompatible parameter semantics', () => {
             expect(() =>
                 analyze(
-                    'object Entity { func link(self: const Entity, other: ref Entity) -> truthvalue { return true } }\nobject Student: Entity { func link(self: const Student, other: const Entity) -> truthvalue { return true } }',
+                    'object Entity { inheritance: func link(other: ref Entity) -> truthvalue { return true } }\nobject Student: Entity { func link(other: const Entity) -> truthvalue { return true } }',
                 ),
             ).toThrow(
                 "2:26:Override 'Student.link(_:)' must match parameter semantics of inherited method",
@@ -983,7 +993,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects overrides with incompatible return semantics', () => {
             expect(() =>
                 analyze(
-                    'object Entity { func id(self: const Entity) -> ref Entity { return { } } }\nobject Student: Entity { func id(self: const Student) -> Entity { return { } } }',
+                    'object Entity { inheritance: func id() -> ref Entity { return { } } }\nobject Student: Entity { func id() -> Entity { return { } } }',
                 ),
             ).toThrow(
                 "2:26:Override 'Student.id()' must match return semantics 'ref', got 'unique'",
@@ -1310,7 +1320,7 @@ describe('Call expression analysis', () => {
 
     it('resolves method calls by owner type and label signature', () => {
         const module = analyze(
-            'object Counter { mutating: func adjust(self: ref Counter, down amount: integer) -> integer { return amount } }\nconst counter: Counter = { }\nconst z = counter.adjust(down: 2)',
+            'object Counter { mutating: func adjust(down amount: integer) -> integer { return amount } }\nconst counter: Counter = { }\nconst z = counter.adjust(down: 2)',
         )
 
         expect(module.functions[0].body).toMatchObject([
@@ -1351,7 +1361,7 @@ describe('Call expression analysis', () => {
 
     it('resolves service method calls as direct dispatch', () => {
         const module = analyze(
-            'service Clock { func now(self: const Clock) -> truthvalue { return true } }\nref clock: Clock = { }\nconst now = clock.now()',
+            'service Clock { func now() -> truthvalue { return true } }\nref clock: Clock = { }\nconst now = clock.now()',
         )
 
         expect(module.functions[0].body[1]).toMatchObject({
@@ -1373,13 +1383,13 @@ describe('Call expression analysis', () => {
     it('reports method not found for wrong method labels and suggests nearby overload', () => {
         expect(() =>
             analyze(
-                'object Counter { mutating: func adjust(self: ref Counter, down amount: integer) -> integer { return amount } }\nconst counter: Counter = { }\nconst z = counter.adjust(up: 2)',
+                'object Counter { mutating: func adjust(down amount: integer) -> integer { return amount } }\nconst counter: Counter = { }\nconst z = counter.adjust(up: 2)',
             ),
         ).toThrow("Function/method not found 'Counter.adjust(up:)'")
 
         expect(() =>
             analyze(
-                'object Counter { mutating: func adjust(self: ref Counter, down amount: integer) -> integer { return amount } }\nconst counter: Counter = { }\nconst z = counter.adjust(up: 2)',
+                'object Counter { mutating: func adjust(down amount: integer) -> integer { return amount } }\nconst counter: Counter = { }\nconst z = counter.adjust(up: 2)',
             ),
         ).toThrow("Did you mean 'Counter.adjust(down:)'?")
     })
@@ -1387,7 +1397,7 @@ describe('Call expression analysis', () => {
     it('rejects helper method calls from outside declaring type', () => {
         expect(() =>
             analyze(
-                'object Counter { helper func secret(self: const Counter) -> integer { return 1 } }\nconst counter: Counter = { }\nconst z = counter.secret()',
+                'object Counter { helper func secret() -> integer { return 1 } }\nconst counter: Counter = { }\nconst z = counter.secret()',
             ),
         ).toThrow(
             "Method 'Counter.secret()' is helper and only callable inside 'Counter'",

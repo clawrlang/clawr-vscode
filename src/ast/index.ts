@@ -154,6 +154,7 @@ export type ASTObjectSection =
     | { kind: 'methods'; items: ASTFunctionDeclaration[] }
     | { kind: 'data'; fields: ASTObjectField[] }
     | { kind: 'mutating'; items: ASTFunctionDeclaration[] }
+    | { kind: 'inheritance'; items: ASTFunctionDeclaration[] }
 
 export interface ASTObjectDeclaration {
     kind: 'object-decl'

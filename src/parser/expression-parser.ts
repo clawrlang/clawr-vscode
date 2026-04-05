@@ -206,6 +206,14 @@ export class ExpressionParser {
                 if (token.keyword === 'when') {
                     return this.parseWhenExpression()
                 }
+                if (token.keyword === 'self' || token.keyword === 'super') {
+                    this.stream.next()
+                    return {
+                        kind: 'identifier',
+                        name: token.keyword,
+                        position: { line: token.line, column: token.column },
+                    }
+                }
                 throw new Error(
                     `${token.line}:${token.column}:Unexpected keyword [${token.keyword}] in expression`,
                 )

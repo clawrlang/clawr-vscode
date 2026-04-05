@@ -7,7 +7,11 @@ export class AssignmentParser {
 
     isNext(): boolean {
         const token = this.stream.peek()
-        return token?.kind === 'IDENTIFIER'
+        return (
+            token?.kind === 'IDENTIFIER' ||
+            (token?.kind === 'KEYWORD' &&
+                (token.keyword === 'self' || token.keyword === 'super'))
+        )
     }
 
     parse(): ASTStatement {

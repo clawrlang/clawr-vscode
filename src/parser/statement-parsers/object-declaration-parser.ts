@@ -87,6 +87,14 @@ export class ObjectDeclarationParser {
                     items.push(this.parseMethod(funcParser))
                 }
                 sections.push({ kind: 'mutating', items })
+            } else if (this.stream.isNext('KEYWORD', 'inheritance')) {
+                this.stream.expect('KEYWORD', 'inheritance')
+                this.stream.expect('PUNCTUATION', ':')
+                const items: ASTFunctionDeclaration[] = []
+                while (!this.isSectionBoundary()) {
+                    items.push(this.parseMethod(funcParser))
+                }
+                sections.push({ kind: 'inheritance', items })
             } else {
                 // Method — coalesce consecutive methods into one section
                 const method = this.parseMethod(funcParser)
@@ -108,7 +116,9 @@ export class ObjectDeclarationParser {
         if (token.kind === 'PUNCTUATION' && token.symbol === '}') return true
         return (
             token.kind === 'KEYWORD' &&
-            (token.keyword === 'data' || token.keyword === 'mutating')
+            (token.keyword === 'data' ||
+                token.keyword === 'mutating' ||
+                token.keyword === 'inheritance')
         )
     }
 
