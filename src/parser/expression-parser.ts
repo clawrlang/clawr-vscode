@@ -2,6 +2,7 @@ import {
     ASTBinaryExpression,
     ASTCallArgument,
     ASTCallExpression,
+    ASTDataLiteralField,
     ASTExpression,
 } from '../ast'
 import { TokenStream } from '../lexer'
@@ -291,7 +292,7 @@ export class ExpressionParser {
 
                 if (token.symbol === '{') {
                     this.stream.next()
-                    const fields: { [field: string]: ASTExpression } = {}
+                    const fields: { [field: string]: ASTDataLiteralField } = {}
                     let superInitializer: ASTCallExpression | undefined
 
                     while (!this.stream.isNext('PUNCTUATION', '}')) {
@@ -328,11 +329,17 @@ export class ExpressionParser {
                             )
                         }
 
-                        const fieldName =
-                            this.stream.expect('IDENTIFIER').identifier
+                        const fieldNameToken = this.stream.expect('IDENTIFIER')
+                        const fieldName = fieldNameToken.identifier
                         this.stream.expect('PUNCTUATION', ':')
                         const fieldValue = this.parse()
-                        fields[fieldName] = fieldValue
+                        fields[fieldName] = {
+                            value: fieldValue,
+                            namePosition: {
+                                line: fieldNameToken.line,
+                                column: fieldNameToken.column,
+                            },
+                        }
                         if (this.stream.isNext('PUNCTUATION', ','))
                             this.stream.next()
 

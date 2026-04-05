@@ -64,7 +64,7 @@ export function collectTopLevelBoundIdentifierPositions(
                 return
             case 'data-literal':
                 for (const val of Object.values(expr.fields)) {
-                    walkExpression(val)
+                    walkExpression(val.value)
                 }
                 return
             case 'when':

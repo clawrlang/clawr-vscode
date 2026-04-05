@@ -122,12 +122,52 @@ describe('SemanticAnalyzer', () => {
             )
         })
 
-        it('reports missing field using declaration field position', () => {
+        it('reports missing field using data literal position', () => {
             expect(() =>
                 analyze(
                     'data Point {\nx: truthvalue\ny: truthvalue\n}\nconst p: Point = { x: true }',
                 ),
-            ).toThrow("3:1:Missing field 'y' for data type 'Point'")
+            ).toThrow("5:18:Missing field 'y' for data type 'Point'")
+        })
+
+        it('reports unknown field using unknown field name position', () => {
+            expect(() =>
+                analyze(
+                    'object Subtype {\ndata:\n    knownField: integer\n}\n\nfunc makeSubtype() -> Subtype => {\n    unknownField: 47\n}',
+                ),
+            ).toThrow('7:5:Field unknownField not found in type Subtype')
+        })
+    })
+
+    describe('unsupported data literal constructs', () => {
+        it('rejects call expressions in data literal fields', () => {
+            expect(() =>
+                analyze(
+                    'func getValue() -> truthvalue { return true }\ndata Point { x: truthvalue y: truthvalue }\nconst p: Point = { x: getValue(), y: true }',
+                ),
+            ).toThrow(
+                'Call expressions are not supported in data literal fields',
+            )
+        })
+
+        it('rejects data-literal arguments in function calls', () => {
+            expect(() =>
+                analyze(
+                    'data Point { x: truthvalue }\nfunc take(p: Point) -> truthvalue { return true }\nconst result: truthvalue = take({ x: true })',
+                ),
+            ).toThrow(
+                'Data literal arguments are not supported in function calls',
+            )
+        })
+
+        it('rejects nested call expressions in data literal fields', () => {
+            expect(() =>
+                analyze(
+                    'func getValue() -> truthvalue { return true }\ndata Point { x: truthvalue y: truthvalue }\ndata Quad { a: Point b: Point }\nconst q: Quad = { a: { x: getValue(), y: true }, b: { x: true, y: true } }',
+                ),
+            ).toThrow(
+                'Call expressions are not supported in data literal fields',
+            )
         })
     })
 
@@ -533,7 +573,7 @@ describe('SemanticAnalyzer', () => {
                     value: {
                         kind: 'data-literal',
                         fields: {
-                            x: { kind: 'truthvalue', value: 'true' },
+                            x: { value: { kind: 'truthvalue', value: 'true' } },
                         },
                     },
                 },
@@ -887,7 +927,7 @@ describe('SemanticAnalyzer', () => {
     describe('inheritance semantics', () => {
         it('rejects object declarations with unknown supertypes', () => {
             expect(() => analyze('object Student: Entity { }')).toThrow(
-                "1:1:Unknown supertype 'Entity' for object 'Student'",
+                "1:17:Unknown supertype 'Entity' for object 'Student'",
             )
         })
 
@@ -1024,8 +1064,10 @@ describe('SemanticAnalyzer', () => {
                         kind: 'data-literal',
                         fields: {
                             child: {
-                                kind: 'truthvalue',
-                                value: 'true',
+                                value: {
+                                    kind: 'truthvalue',
+                                    value: 'true',
+                                },
                             },
                         },
                     },

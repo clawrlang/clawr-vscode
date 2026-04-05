@@ -38,9 +38,15 @@ export class ObjectDeclarationParser {
 
         // Optional supertype `Name: Super` (only for object, not service)
         let supertype: string | undefined
+        let supertypePosition: { line: number; column: number } | undefined
         if (!isService && this.stream.isNext('PUNCTUATION', ':')) {
             this.stream.expect('PUNCTUATION', ':')
-            supertype = this.stream.expect('IDENTIFIER').identifier
+            const supertypeToken = this.stream.expect('IDENTIFIER')
+            supertype = supertypeToken.identifier
+            supertypePosition = {
+                line: supertypeToken.line,
+                column: supertypeToken.column,
+            }
         }
 
         this.stream.expect('PUNCTUATION', '{')
@@ -60,6 +66,7 @@ export class ObjectDeclarationParser {
             kind: 'object-decl',
             name,
             supertype,
+            supertypePosition,
             visibility,
             sections,
             position,

@@ -63,9 +63,14 @@ export interface ASTIdentifier {
     position: ASTPosition
 }
 
+export interface ASTDataLiteralField {
+    value: ASTExpression
+    namePosition: ASTPosition
+}
+
 export interface ASTDataLiteral {
     kind: 'data-literal'
-    fields: { [field: string]: ASTExpression }
+    fields: { [field: string]: ASTDataLiteralField }
     superInitializer?: ASTCallExpression
     position: ASTPosition
 }
@@ -161,6 +166,7 @@ export interface ASTObjectDeclaration {
     kind: 'object-decl'
     name: string
     supertype?: string
+    supertypePosition?: ASTPosition
     visibility: ASTVisibility
     sections: ASTObjectSection[]
     position: ASTPosition

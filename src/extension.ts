@@ -994,7 +994,7 @@ function resolveInFunctionScope(
                 return null
             case 'data-literal':
                 for (const value of Object.values(expr.fields)) {
-                    const match = resolveExpression(value)
+                    const match = resolveExpression(value.value)
                     if (match) return match
                 }
                 return null
@@ -1670,7 +1670,7 @@ function resolveLocalTargetInFunction(
                 return null
             case 'data-literal':
                 for (const val of Object.values(expr.fields)) {
-                    const hit = walkExpression(val)
+                    const hit = walkExpression(val.value)
                     if (hit) return hit
                 }
                 return null
@@ -1883,7 +1883,7 @@ function collectLocalScopedReferences(
                 return
             case 'data-literal':
                 for (const val of Object.values(expr.fields))
-                    walkExpression(val)
+                    walkExpression(val.value)
                 return
             case 'when':
                 walkExpression(expr.subject)
@@ -1998,7 +1998,7 @@ function collectIdentifierPositions(
                 return
             case 'data-literal':
                 for (const val of Object.values(expr.fields))
-                    walkExpression(val)
+                    walkExpression(val.value)
                 return
             case 'when':
                 walkExpression(expr.subject)

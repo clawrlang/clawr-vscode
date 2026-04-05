@@ -145,8 +145,10 @@ describe('Parser Tests', () => {
                     value: {
                         kind: 'data-literal',
                         fields: {
-                            x: { kind: 'truthvalue', value: 'true' },
-                            y: { kind: 'truthvalue', value: 'false' },
+                            x: { value: { kind: 'truthvalue', value: 'true' } },
+                            y: {
+                                value: { kind: 'truthvalue', value: 'false' },
+                            },
                         },
                     },
                 },
@@ -189,8 +191,10 @@ describe('Parser Tests', () => {
                         },
                         fields: {
                             child: {
-                                kind: 'truthvalue',
-                                value: 'true',
+                                value: {
+                                    kind: 'truthvalue',
+                                    value: 'true',
+                                },
                             },
                         },
                     },
@@ -386,7 +390,7 @@ describe('Parser Tests', () => {
                     value: {
                         kind: 'data-literal',
                         fields: {
-                            x: { kind: 'truthvalue', value: 'true' },
+                            x: { value: { kind: 'truthvalue', value: 'true' } },
                         },
                     },
                 },
