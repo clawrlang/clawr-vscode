@@ -26,7 +26,7 @@ import { decimal } from 'decimalish'
 
 export class TokenStream {
     private source: Source
-    private file: string
+    public readonly file: string
     private previousToken: Token | undefined // <-- add this
 
     constructor(source: string | Source, file: string) {

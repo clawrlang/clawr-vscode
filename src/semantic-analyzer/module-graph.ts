@@ -54,7 +54,9 @@ export async function buildModuleGraph(
         visiting.add(filePath)
 
         const source = await fs.promises.readFile(filePath, 'utf-8')
-        const ast = new Parser(new TokenStream(source, filePath)).parse()
+        const ast = new Parser(
+            new TokenStream(source, path.basename(filePath)),
+        ).parse()
         modules.set(filePath, ast)
 
         const resolvedImports = ast.imports

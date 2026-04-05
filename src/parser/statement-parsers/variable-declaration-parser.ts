@@ -50,6 +50,7 @@ export class VariableDeclarationParser {
             valueSet,
             value,
             position: {
+                file: this.stream.file,
                 line: semanticsToken.line,
                 column: semanticsToken.column,
             },

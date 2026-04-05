@@ -110,7 +110,7 @@ describe('SemanticAnalyzer', () => {
             expect(() =>
                 analyze('data Point {\n  const x: truthvalue\n}'),
             ).toThrow(
-                "1:1:Field 'x' in data type 'Point' cannot use 'const' semantics",
+                "test.clawr:1:1:Field 'x' in data type 'Point' cannot use 'const' semantics",
             )
         })
 
@@ -118,7 +118,7 @@ describe('SemanticAnalyzer', () => {
             expect(() =>
                 analyze('data Point {\n  ref x: truthvalue\n}'),
             ).toThrow(
-                "1:1:Field 'x' in data type 'Point' cannot use 'ref' semantics with non-reference type 'truthvalue'",
+                "test.clawr:1:1:Field 'x' in data type 'Point' cannot use 'ref' semantics with non-reference type 'truthvalue'",
             )
         })
 
@@ -127,7 +127,7 @@ describe('SemanticAnalyzer', () => {
                 analyze(
                     'data Point {\nx: truthvalue\ny: truthvalue\n}\nconst p: Point = { x: true }',
                 ),
-            ).toThrow("5:18:Missing field 'y' for data type 'Point'")
+            ).toThrow("test.clawr:5:18:Missing field 'y' for data type 'Point'")
         })
 
         it('reports unknown field using unknown field name position', () => {
@@ -135,7 +135,9 @@ describe('SemanticAnalyzer', () => {
                 analyze(
                     'object Subtype {\ndata:\n    knownField: integer\n}\n\nfunc makeSubtype() -> Subtype => {\n    unknownField: 47\n}',
                 ),
-            ).toThrow('7:5:Field unknownField not found in type Subtype')
+            ).toThrow(
+                'test.clawr:7:5:Field unknownField not found in type Subtype',
+            )
         })
     })
 
@@ -192,7 +194,7 @@ describe('SemanticAnalyzer', () => {
                 throw new Error('Expected analyze to throw')
             } catch (error) {
                 expect((error as Error).message).toBe(
-                    "Error: 1:11:Unknown identifier 'nope'\nError: 2:11:Unknown identifier 'alsoNope'",
+                    "Error: test.clawr:1:11:Unknown identifier 'nope'\nError: test.clawr:2:11:Unknown identifier 'alsoNope'",
                 )
             }
         })
@@ -212,13 +214,13 @@ describe('SemanticAnalyzer', () => {
 
         it('fails on explicit declaration type mismatch', () => {
             expect(() => analyze('const x: integer = ambiguous')).toThrow(
-                "1:20:Type mismatch: expected 'integer' but got 'truthvalue'",
+                "test.clawr:1:20:Type mismatch: expected 'integer' but got 'truthvalue'",
             )
         })
 
         it('fails when declaration has data literal initializer without annotation', () => {
             expect(() => analyze('const p = { x: true }')).toThrow(
-                "1:1:Cannot infer type for variable 'p' from 'data-literal' initializer",
+                "test.clawr:1:1:Cannot infer type for variable 'p' from 'data-literal' initializer",
             )
         })
 
@@ -241,13 +243,13 @@ describe('SemanticAnalyzer', () => {
 
         it('fails when inferred declaration references unknown identifier', () => {
             expect(() => analyze('const y = x')).toThrow(
-                "1:11:Unknown identifier 'x'",
+                "test.clawr:1:11:Unknown identifier 'x'",
             )
         })
 
         it('fails when redeclaring a variable in the same scope', () => {
             expect(() => analyze('const x = ambiguous\nmut x = true')).toThrow(
-                "2:1:Variable 'x' is already declared in this scope",
+                "test.clawr:2:1:Variable 'x' is already declared in this scope",
             )
         })
     })
@@ -272,13 +274,13 @@ describe('SemanticAnalyzer', () => {
 
         it('fails when assignment target and value types differ', () => {
             expect(() => analyze('mut x = ambiguous\nx = y')).toThrow(
-                "2:5:Unknown identifier 'y'",
+                "test.clawr:2:5:Unknown identifier 'y'",
             )
         })
 
         it('fails when assigning to const variable', () => {
             expect(() => analyze('const x = ambiguous\nx = true')).toThrow(
-                "2:1:Cannot assign to const variable 'x'",
+                "test.clawr:2:1:Cannot assign to const variable 'x'",
             )
         })
 
@@ -288,13 +290,13 @@ describe('SemanticAnalyzer', () => {
                     'data Point {\n  x: truthvalue\n}\nmut p: Point = { x: true }\nmut t = ambiguous\nt = p',
                 ),
             ).toThrow(
-                "6:1:Assignment type mismatch: target is 'truthvalue' but value is 'Point'",
+                "test.clawr:6:1:Assignment type mismatch: target is 'truthvalue' but value is 'Point'",
             )
         })
 
         it('fails when assignment target is unknown identifier', () => {
             expect(() => analyze('unknown = ambiguous')).toThrow(
-                "1:1:Unknown identifier 'unknown'",
+                "test.clawr:1:1:Unknown identifier 'unknown'",
             )
         })
     })
@@ -363,7 +365,7 @@ describe('SemanticAnalyzer', () => {
 
         it('rejects non-string operands for +', () => {
             expect(() => analyze('const s: string = "a" + 1')).toThrow(
-                "1:23:Operator '+' requires matching operand types, got 'string' and 'integer'",
+                "test.clawr:1:23:Operator '+' requires matching operand types, got 'string' and 'integer'",
             )
         })
     })
@@ -424,19 +426,19 @@ describe('SemanticAnalyzer', () => {
 
         it('rejects non-integer operands for arithmetic operators', () => {
             expect(() => analyze('const x: integer = true - 1')).toThrow(
-                "1:25:Operator '-' expects integer operands, got 'truthvalue' and 'integer'",
+                "test.clawr:1:25:Operator '-' expects integer operands, got 'truthvalue' and 'integer'",
             )
         })
 
         it('rejects mismatched equality operand types', () => {
             expect(() => analyze('const x: truthvalue = 1 == true')).toThrow(
-                "1:25:Operator '==' requires matching operand types, got 'integer' and 'truthvalue'",
+                "test.clawr:1:25:Operator '==' requires matching operand types, got 'integer' and 'truthvalue'",
             )
         })
 
         it('rejects non-truthvalue operands for logical operators', () => {
             expect(() => analyze('const x: truthvalue = true && 1')).toThrow(
-                "1:28:Operator '&&' expects truthvalue operands, got 'truthvalue' and 'integer'",
+                "test.clawr:1:28:Operator '&&' expects truthvalue operands, got 'truthvalue' and 'integer'",
             )
         })
     })
@@ -458,7 +460,7 @@ describe('SemanticAnalyzer', () => {
 
         it('rejects mixed element types in array literals', () => {
             expect(() => analyze('const xs = [1, true]')).toThrow(
-                "1:16:Array literal element type mismatch: expected 'integer' but got 'truthvalue'",
+                "test.clawr:1:16:Array literal element type mismatch: expected 'integer' but got 'truthvalue'",
             )
         })
 
@@ -475,13 +477,13 @@ describe('SemanticAnalyzer', () => {
 
         it('rejects array element type mismatch against [T] annotation', () => {
             expect(() => analyze('const xs: [truthvalue] = [true, 1]')).toThrow(
-                "1:33:Type mismatch for array element: expected 'truthvalue' but got 'integer'",
+                "test.clawr:1:33:Type mismatch for array element: expected 'truthvalue' but got 'integer'",
             )
         })
 
         it('rejects empty array literal without explicit type context', () => {
             expect(() => analyze('const xs = []')).toThrow(
-                '1:12:Cannot infer type for empty array literal; add an explicit annotation',
+                'test.clawr:1:12:Cannot infer type for empty array literal; add an explicit annotation',
             )
         })
 
@@ -510,7 +512,9 @@ describe('SemanticAnalyzer', () => {
         it('rejects non-integer array index expressions', () => {
             expect(() =>
                 analyze('const xs: [integer] = [1, 2]\nconst x = xs[true]'),
-            ).toThrow("2:13:Array index must be integer, got 'truthvalue'")
+            ).toThrow(
+                "test.clawr:2:13:Array index must be integer, got 'truthvalue'",
+            )
         })
 
         it('infers when expression type from branch values', () => {
@@ -525,7 +529,7 @@ describe('SemanticAnalyzer', () => {
 
         it('rejects when expressions without wildcard branch', () => {
             expect(() => analyze('const x = when true { true => 1 }')).toThrow(
-                "1:11:when expression requires a wildcard '_' branch for exhaustiveness",
+                "test.clawr:1:11:when expression requires a wildcard '_' branch for exhaustiveness",
             )
         })
 
@@ -533,7 +537,7 @@ describe('SemanticAnalyzer', () => {
             expect(() =>
                 analyze('const x = when true { _ => 1, true => 2 }'),
             ).toThrow(
-                "1:11:Wildcard pattern '_' must be the last branch in when expression",
+                "test.clawr:1:11:Wildcard pattern '_' must be the last branch in when expression",
             )
         })
 
@@ -541,7 +545,7 @@ describe('SemanticAnalyzer', () => {
             expect(() =>
                 analyze('const x = when true { 1 => 1, _ => 2 }'),
             ).toThrow(
-                "1:23:when pattern type mismatch: expected 'truthvalue' but got 'integer'",
+                "test.clawr:1:23:when pattern type mismatch: expected 'truthvalue' but got 'integer'",
             )
         })
     })
@@ -606,7 +610,7 @@ describe('SemanticAnalyzer', () => {
                     'data Point {\n  x: truthvalue\n}\nmut p: Point = { x: true }\np.x = p',
                 ),
             ).toThrow(
-                "5:1:Assignment type mismatch: target is 'truthvalue' but value is 'Point'",
+                "test.clawr:5:1:Assignment type mismatch: target is 'truthvalue' but value is 'Point'",
             )
         })
 
@@ -615,7 +619,9 @@ describe('SemanticAnalyzer', () => {
                 analyze(
                     'data Point {\n  x: truthvalue\n}\nconst p: Point = { x: true }\np.x = false',
                 ),
-            ).toThrow("5:1:Cannot mutate field through const variable 'p'")
+            ).toThrow(
+                "test.clawr:5:1:Cannot mutate field through const variable 'p'",
+            )
         })
     })
 
@@ -641,7 +647,7 @@ describe('SemanticAnalyzer', () => {
                     'data Box {\n  value: truthvalue\n}\nref shared: Box = { value: true }\nmut isolated: Box = shared',
                 ),
             ).toThrow(
-                '5:1:Cross-semantics assignment requires explicit copy(...)',
+                'test.clawr:5:1:Cross-semantics assignment requires explicit copy(...)',
             )
             expect(() =>
                 analyze(
@@ -656,7 +662,7 @@ describe('SemanticAnalyzer', () => {
                     'data Box {\n  value: truthvalue\n}\nref shared: Box = { value: true }\nmut isolated: Box = { value: true }\nisolated = shared',
                 ),
             ).toThrow(
-                '6:1:Cross-semantics assignment requires explicit copy(...)',
+                'test.clawr:6:1:Cross-semantics assignment requires explicit copy(...)',
             )
         })
 
@@ -691,7 +697,7 @@ describe('SemanticAnalyzer', () => {
 
         it('rejects copy(...) for non-reference values', () => {
             expect(() => analyze('mut x = copy(true)')).toThrow(
-                "1:9:copy(...) expects a reference-counted value, got 'truthvalue'",
+                "test.clawr:1:9:copy(...) expects a reference-counted value, got 'truthvalue'",
             )
         })
 
@@ -765,7 +771,9 @@ describe('SemanticAnalyzer', () => {
         it('rejects for-in over non-array iterables', () => {
             expect(() =>
                 analyze('const x: integer = 1\nfor y in x { print y }'),
-            ).toThrow("2:1:for-in iterable must be array, got 'integer'")
+            ).toThrow(
+                "test.clawr:2:1:for-in iterable must be array, got 'integer'",
+            )
         })
 
         it('rejects non-truthvalue if condition', () => {
@@ -773,7 +781,9 @@ describe('SemanticAnalyzer', () => {
                 analyze(
                     'data Box { value: truthvalue }\nconst b: Box = { value: true }\nif b { print true }',
                 ),
-            ).toThrow("3:1:if condition must be truthvalue, got 'Box'")
+            ).toThrow(
+                "test.clawr:3:1:if condition must be truthvalue, got 'Box'",
+            )
         })
 
         it('rejects non-truthvalue while condition', () => {
@@ -781,18 +791,20 @@ describe('SemanticAnalyzer', () => {
                 analyze(
                     'data Box { value: truthvalue }\nconst b: Box = { value: true }\nwhile b { break }',
                 ),
-            ).toThrow("3:1:while condition must be truthvalue, got 'Box'")
+            ).toThrow(
+                "test.clawr:3:1:while condition must be truthvalue, got 'Box'",
+            )
         })
 
         it('rejects break outside while', () => {
             expect(() => analyze('break')).toThrow(
-                '1:1:break is only allowed inside a while loop',
+                'test.clawr:1:1:break is only allowed inside a while loop',
             )
         })
 
         it('rejects continue outside while', () => {
             expect(() => analyze('continue')).toThrow(
-                '1:1:continue is only allowed inside a while loop',
+                'test.clawr:1:1:continue is only allowed inside a while loop',
             )
         })
     })
@@ -938,7 +950,7 @@ describe('SemanticAnalyzer', () => {
     describe('inheritance semantics', () => {
         it('rejects object declarations with unknown supertypes', () => {
             expect(() => analyze('object Student: Entity { }')).toThrow(
-                "1:17:Unknown supertype 'Entity' for object 'Student'",
+                "test.clawr:1:17:Unknown supertype 'Entity' for object 'Student'",
             )
         })
 
@@ -948,7 +960,7 @@ describe('SemanticAnalyzer', () => {
                     'data Entity { id: truthvalue }\nobject Student: Entity { }',
                 ),
             ).toThrow(
-                "2:1:Object 'Student' cannot inherit from non-object type 'Entity'",
+                "test.clawr:2:1:Object 'Student' cannot inherit from non-object type 'Entity'",
             )
         })
 
@@ -957,7 +969,7 @@ describe('SemanticAnalyzer', () => {
                 analyze(
                     'object A: B { inheritance: }\nobject B: A { inheritance: }',
                 ),
-            ).toThrow("1:1:Cyclic inheritance involving 'A'")
+            ).toThrow("test.clawr:1:1:Cyclic inheritance involving 'A'")
         })
 
         it('allows calling inherited methods on subtype values', () => {
@@ -1017,7 +1029,7 @@ describe('SemanticAnalyzer', () => {
                     'object Entity { func id() -> truthvalue { return true } inheritance: }\nobject Student: Entity { func id() -> integer { return 1 } }',
                 ),
             ).toThrow(
-                "2:26:Override 'Student.id()' must match return type 'truthvalue', got 'integer'",
+                "test.clawr:2:26:Override 'Student.id()' must match return type 'truthvalue', got 'integer'",
             )
         })
 
@@ -1027,7 +1039,7 @@ describe('SemanticAnalyzer', () => {
                     'object Entity { func id() -> truthvalue { return true } inheritance: }\nobject Student: Entity { mutating: func id() -> truthvalue { return true } }',
                 ),
             ).toThrow(
-                "2:36:Override 'Student.id()' must match effect level 'pure', got 'self-mutation'",
+                "test.clawr:2:36:Override 'Student.id()' must match effect level 'pure', got 'self-mutation'",
             )
         })
 
@@ -1037,7 +1049,7 @@ describe('SemanticAnalyzer', () => {
                     'object Entity { func link(other: ref Entity) -> truthvalue { return true } inheritance: }\nobject Student: Entity { func link(other: const Entity) -> truthvalue { return true } }',
                 ),
             ).toThrow(
-                "2:26:Override 'Student.link(_:)' must match parameter semantics of inherited method",
+                "test.clawr:2:26:Override 'Student.link(_:)' must match parameter semantics of inherited method",
             )
         })
 
@@ -1047,7 +1059,7 @@ describe('SemanticAnalyzer', () => {
                     'object Entity { func id() -> ref Entity { return { } } inheritance: }\nobject Student: Entity { func id() -> Entity { return { } } }',
                 ),
             ).toThrow(
-                "2:26:Override 'Student.id()' must match return semantics 'ref', got 'unique'",
+                "test.clawr:2:26:Override 'Student.id()' must match return semantics 'ref', got 'unique'",
             )
         })
 
@@ -1127,7 +1139,7 @@ describe('SemanticAnalyzer', () => {
             expect(() =>
                 analyze('service Clock { }\nconst clock: Clock = { }'),
             ).toThrow(
-                "2:1:Service variable 'clock' must be declared as 'ref', got 'const'",
+                "test.clawr:2:1:Service variable 'clock' must be declared as 'ref', got 'const'",
             )
         })
 
@@ -1147,7 +1159,9 @@ describe('SemanticAnalyzer', () => {
         it('rejects non-ref service parameters', () => {
             expect(() =>
                 analyze('service Clock { }\nfunc use(clock: Clock) { }'),
-            ).toThrow("2:10:Service parameter 'clock' must use 'ref' semantics")
+            ).toThrow(
+                "test.clawr:2:10:Service parameter 'clock' must use 'ref' semantics",
+            )
         })
 
         it('rejects service returns without ref return semantics', () => {
@@ -1156,7 +1170,7 @@ describe('SemanticAnalyzer', () => {
                     'service Clock { }\nfunc current() -> Clock { return { } }',
                 ),
             ).toThrow(
-                "2:1:Function 'current' returning service type 'Clock' must declare '-> ref Clock'",
+                "test.clawr:2:1:Function 'current' returning service type 'Clock' must declare '-> ref Clock'",
             )
         })
 
@@ -1174,7 +1188,7 @@ describe('SemanticAnalyzer', () => {
             expect(() =>
                 analyze('service Logger { }\ndata Audit { logger: Logger }'),
             ).toThrow(
-                "2:1:Data type 'Audit' cannot contain service field 'logger' of type 'Logger'",
+                "test.clawr:2:1:Data type 'Audit' cannot contain service field 'logger' of type 'Logger'",
             )
 
             expect(() =>
@@ -1182,7 +1196,7 @@ describe('SemanticAnalyzer', () => {
                     'service Logger { }\nobject Audit { data: ref logger: Logger }',
                 ),
             ).toThrow(
-                "2:1:Object 'Audit' cannot contain service field 'logger' of type 'Logger'",
+                "test.clawr:2:1:Object 'Audit' cannot contain service field 'logger' of type 'Logger'",
             )
         })
 
@@ -1192,7 +1206,7 @@ describe('SemanticAnalyzer', () => {
                     'service Logger { }\nservice Repo { data: logger: Logger }',
                 ),
             ).toThrow(
-                "2:1:Service 'Repo' field 'logger' with service type 'Logger' must use 'ref' semantics",
+                "test.clawr:2:1:Service 'Repo' field 'logger' with service type 'Logger' must use 'ref' semantics",
             )
 
             const module = analyze(
@@ -1265,7 +1279,7 @@ describe('Function body analysis', () => {
             throw new Error('Expected analyze to throw')
         } catch (error) {
             expect((error as Error).message).toBe(
-                "Error: 2:15:Unknown identifier 'nope'\nError: 3:15:Unknown identifier 'alsoNope'",
+                "Error: test.clawr:2:15:Unknown identifier 'nope'\nError: test.clawr:3:15:Unknown identifier 'alsoNope'",
             )
         }
     })

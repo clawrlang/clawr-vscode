@@ -51,7 +51,7 @@ export class Parser {
             const after = this.stream.peek()
             if (before && before === after) {
                 throw new Error(
-                    `${before.line}:${before.column}:Unexpected token ${describeToken(before)} at top level`,
+                    `${this.stream.file}:${before.line}:${before.column}:Unexpected token ${describeToken(before)} at top level`,
                 )
             }
         }
@@ -90,7 +90,11 @@ export class Parser {
             const token = this.stream.expect('KEYWORD', 'break')
             return {
                 kind: 'break',
-                position: { line: token.line, column: token.column },
+                position: {
+                    file: this.stream.file,
+                    line: token.line,
+                    column: token.column,
+                },
             }
         }
 
@@ -98,7 +102,11 @@ export class Parser {
             const token = this.stream.expect('KEYWORD', 'continue')
             return {
                 kind: 'continue',
-                position: { line: token.line, column: token.column },
+                position: {
+                    file: this.stream.file,
+                    line: token.line,
+                    column: token.column,
+                },
             }
         }
 
@@ -133,7 +141,11 @@ export class Parser {
             condition,
             thenBranch,
             elseBranch,
-            position: { line: ifToken.line, column: ifToken.column },
+            position: {
+                file: this.stream.file,
+                line: ifToken.line,
+                column: ifToken.column,
+            },
         }
     }
 
@@ -146,7 +158,11 @@ export class Parser {
             kind: 'while',
             condition,
             body,
-            position: { line: whileToken.line, column: whileToken.column },
+            position: {
+                file: this.stream.file,
+                line: whileToken.line,
+                column: whileToken.column,
+            },
         }
     }
 
@@ -162,7 +178,11 @@ export class Parser {
             loopVar,
             iterable,
             body,
-            position: { line: forToken.line, column: forToken.column },
+            position: {
+                file: this.stream.file,
+                line: forToken.line,
+                column: forToken.column,
+            },
         }
     }
 
@@ -188,7 +208,11 @@ export class Parser {
 
     private parseReturnStatement(): ASTReturnStatement {
         const returnToken = this.stream.expect('KEYWORD', 'return')
-        const position = { line: returnToken.line, column: returnToken.column }
+        const position = {
+            file: this.stream.file,
+            line: returnToken.line,
+            column: returnToken.column,
+        }
 
         // A return value is present if the next token could start an expression.
         // It is absent if the block ends (`}`) or the stream is exhausted.
@@ -215,13 +239,13 @@ export class Parser {
             const nextToken = this.stream.peek()
             if (!nextToken) {
                 throw new Error(
-                    `${importToken.line}:${importToken.column}:Expected identifier in import list, got EOF`,
+                    `${this.stream.file}:${importToken.line}:${importToken.column}:Expected identifier in import list, got EOF`,
                 )
             }
 
             if (nextToken.kind !== 'IDENTIFIER') {
                 throw new Error(
-                    `${nextToken.line}:${nextToken.column}:Expected identifier in import list, got ${describeToken(nextToken)}`,
+                    `${this.stream.file}:${nextToken.line}:${nextToken.column}:Expected identifier in import list, got ${describeToken(nextToken)}`,
                 )
             }
 
@@ -236,7 +260,11 @@ export class Parser {
             items.push({
                 name: nameToken.identifier,
                 alias,
-                position: { line: nameToken.line, column: nameToken.column },
+                position: {
+                    file: this.stream.file,
+                    line: nameToken.line,
+                    column: nameToken.column,
+                },
             })
 
             if (this.stream.isNext('KEYWORD', 'from')) {
@@ -247,12 +275,12 @@ export class Parser {
                 const separatorToken = this.stream.peek()
                 if (!separatorToken) {
                     throw new Error(
-                        `${importToken.line}:${importToken.column}:Expected ',' or 'from' after import item, got EOF`,
+                        `${this.stream.file}:${importToken.line}:${importToken.column}:Expected ',' or 'from' after import item, got EOF`,
                     )
                 }
 
                 throw new Error(
-                    `${separatorToken.line}:${separatorToken.column}:Expected ',' or 'from' after import item, got ${describeToken(separatorToken)}`,
+                    `${this.stream.file}:${separatorToken.line}:${separatorToken.column}:Expected ',' or 'from' after import item, got ${describeToken(separatorToken)}`,
                 )
             }
 
@@ -261,7 +289,7 @@ export class Parser {
             if (this.stream.isNext('KEYWORD', 'from')) {
                 const fromToken = this.stream.peek()
                 throw new Error(
-                    `${fromToken?.line ?? importToken.line}:${fromToken?.column ?? importToken.column}:Expected identifier after ',' in import list, got 'from'`,
+                    `${this.stream.file}:${fromToken?.line ?? importToken.line}:${fromToken?.column ?? importToken.column}:Expected identifier after ',' in import list, got 'from'`,
                 )
             }
         }
@@ -269,13 +297,13 @@ export class Parser {
         const fromToken = this.stream.peek()
         if (!fromToken) {
             throw new Error(
-                `${importToken.line}:${importToken.column}:Expected 'from' after import list, got EOF`,
+                `${this.stream.file}:${importToken.line}:${importToken.column}:Expected 'from' after import list, got EOF`,
             )
         }
 
         if (fromToken.kind !== 'KEYWORD' || fromToken.keyword !== 'from') {
             throw new Error(
-                `${fromToken.line}:${fromToken.column}:Expected 'from' after import list, got ${describeToken(fromToken)}`,
+                `${this.stream.file}:${fromToken.line}:${fromToken.column}:Expected 'from' after import list, got ${describeToken(fromToken)}`,
             )
         }
 
@@ -283,7 +311,7 @@ export class Parser {
         const modulePathToken = this.stream.next()
         if (!modulePathToken || modulePathToken.kind !== 'STRING_LITERAL') {
             throw new Error(
-                `${fromToken.line}:${fromToken.column}:Expected module path string literal after 'from', got ${modulePathToken ? describeToken(modulePathToken) : 'EOF'}`,
+                `${this.stream.file}:${fromToken.line}:${fromToken.column}:Expected module path string literal after 'from', got ${modulePathToken ? describeToken(modulePathToken) : 'EOF'}`,
             )
         }
         const modulePath = modulePathToken.value
@@ -292,7 +320,11 @@ export class Parser {
             kind: 'import',
             items,
             modulePath,
-            position: { line: importToken.line, column: importToken.column },
+            position: {
+                file: this.stream.file,
+                line: importToken.line,
+                column: importToken.column,
+            },
         }
     }
 
@@ -306,7 +338,7 @@ export class Parser {
 
             if (!dataDeclaration || dataDeclaration.kind !== 'data-decl') {
                 throw new Error(
-                    `${helperToken.line}:${helperToken.column}:Expected data declaration after helper`,
+                    `${this.stream.file}:${helperToken.line}:${helperToken.column}:Expected data declaration after helper`,
                 )
             }
 
@@ -325,7 +357,7 @@ export class Parser {
         }
 
         throw new Error(
-            `${helperToken.line}:${helperToken.column}:helper is only supported before data, func, object, or service declarations`,
+            `${this.stream.file}:${helperToken.line}:${helperToken.column}:helper is only supported before data, func, object, or service declarations`,
         )
     }
 }

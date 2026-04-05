@@ -28,7 +28,7 @@ export class AssignmentParser {
             kind: 'assign',
             target,
             value,
-            position: { line: firstToken.line, column: firstToken.column },
+            position: { file: this.stream.file, line: firstToken.line, column: firstToken.column },
         }
     }
 }

@@ -54,6 +54,12 @@ export class CompilerDiagnosticsError extends Error {
     }
 }
 
+function posStr(pos: { file?: string; line: number; column: number }): string {
+    return pos.file
+        ? `${pos.file}:${pos.line}:${pos.column}`
+        : `${pos.line}:${pos.column}`
+}
+
 export class SemanticAnalyzer {
     private bindings: BindingMap = new Map()
     private dataTypes: Map<string, BindingMap>
@@ -396,14 +402,14 @@ export class SemanticAnalyzer {
     ): SemanticReturnStatement {
         if (this.currentInheritanceInitializer && stmt.value !== undefined) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Inheritance initializer methods do not return values; assign to 'self' instead`,
+                `${posStr(stmt.position)}:Inheritance initializer methods do not return values; assign to 'self' instead`,
             )
         }
 
         if (stmt.value === undefined) {
             if (this.currentFunctionReturnType !== undefined) {
                 throw new Error(
-                    `${stmt.position.line}:${stmt.position.column}:Return statement requires a value of type '${this.currentFunctionReturnType}'`,
+                    `${posStr(stmt.position)}:Return statement requires a value of type '${this.currentFunctionReturnType}'`,
                 )
             }
 
@@ -416,7 +422,7 @@ export class SemanticAnalyzer {
 
         if (this.currentFunctionReturnType === undefined) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot return a value from a function without a return type annotation`,
+                `${posStr(stmt.position)}:Cannot return a value from a function without a return type annotation`,
             )
         }
 
@@ -438,7 +444,7 @@ export class SemanticAnalyzer {
             !this.isTypeAssignable(returnType, this.currentFunctionReturnType)
         ) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Return type mismatch: expected '${this.currentFunctionReturnType}' but got '${returnType}'`,
+                `${posStr(stmt.position)}:Return type mismatch: expected '${this.currentFunctionReturnType}' but got '${returnType}'`,
             )
         }
 
@@ -535,20 +541,20 @@ export class SemanticAnalyzer {
         const iterableType = this.inferExpressionType(stmt.iterable)
         if (!iterableType) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for for-in iterable`,
+                `${posStr(stmt.position)}:Cannot infer type for for-in iterable`,
             )
         }
 
         if (!this.isArrayType(iterableType)) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:for-in iterable must be array, got '${iterableType}'`,
+                `${posStr(stmt.position)}:for-in iterable must be array, got '${iterableType}'`,
             )
         }
 
         const elementType = this.arrayElementType(iterableType)
         if (!elementType) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot resolve array element type from '${iterableType}'`,
+                `${posStr(stmt.position)}:Cannot resolve array element type from '${iterableType}'`,
             )
         }
 
@@ -585,7 +591,7 @@ export class SemanticAnalyzer {
     ): SemanticStatement {
         if (this.loopDepth <= 0) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:break is only allowed inside a while loop`,
+                `${posStr(stmt.position)}:break is only allowed inside a while loop`,
             )
         }
 
@@ -597,7 +603,7 @@ export class SemanticAnalyzer {
     ): SemanticStatement {
         if (this.loopDepth <= 0) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:continue is only allowed inside a while loop`,
+                `${posStr(stmt.position)}:continue is only allowed inside a while loop`,
             )
         }
 
@@ -612,7 +618,7 @@ export class SemanticAnalyzer {
         const conditionType = this.inferExpressionType(condition)
         if (conditionType !== 'truthvalue') {
             throw new Error(
-                `${position.line}:${position.column}:${keyword} condition must be truthvalue, got '${conditionType ?? condition.kind}'`,
+                `${posStr(position)}:${keyword} condition must be truthvalue, got '${conditionType ?? condition.kind}'`,
             )
         }
     }
@@ -622,7 +628,7 @@ export class SemanticAnalyzer {
     ): SemanticPrintStatement {
         if (this.currentOwnerKind === 'object') {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Object methods may not perform external side-effects (print)`,
+                `${posStr(stmt.position)}:Object methods may not perform external side-effects (print)`,
             )
         }
 
@@ -634,7 +640,7 @@ export class SemanticAnalyzer {
         const dispatchType = this.inferExpressionType(stmt.value)
         if (!dispatchType) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot infer print dispatch type from '${stmt.value.kind}'`,
+                `${posStr(stmt.position)}:Cannot infer print dispatch type from '${stmt.value.kind}'`,
             )
         }
 
@@ -648,7 +654,7 @@ export class SemanticAnalyzer {
     private analyzeAssignment(stmt: ASTAssignment): SemanticAssignment {
         if (!this.isAssignableTarget(stmt.target)) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Invalid assignment target kind '${stmt.target.kind}'`,
+                `${posStr(stmt.position)}:Invalid assignment target kind '${stmt.target.kind}'`,
             )
         }
 
@@ -665,7 +671,7 @@ export class SemanticAnalyzer {
             stmt.value.kind !== 'data-literal'
         ) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Inheritance initializer must initialize 'self' with a data literal before using it`,
+                `${posStr(stmt.position)}:Inheritance initializer must initialize 'self' with a data literal before using it`,
             )
         }
 
@@ -681,13 +687,13 @@ export class SemanticAnalyzer {
 
         if (!targetType) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for assignment target '${stmt.target.kind}'`,
+                `${posStr(stmt.position)}:Cannot infer type for assignment target '${stmt.target.kind}'`,
             )
         }
 
         if (!valueType) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for assignment value '${stmt.value.kind}'`,
+                `${posStr(stmt.position)}:Cannot infer type for assignment value '${stmt.value.kind}'`,
             )
         }
 
@@ -697,7 +703,7 @@ export class SemanticAnalyzer {
 
         if (!this.isTypeAssignable(valueType, targetType)) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Assignment type mismatch: target is '${targetType}' but value is '${valueType}'`,
+                `${posStr(stmt.position)}:Assignment type mismatch: target is '${targetType}' but value is '${valueType}'`,
             )
         }
 
@@ -801,7 +807,7 @@ export class SemanticAnalyzer {
         if (identifier.name !== 'self') return
 
         throw new Error(
-            `${identifier.position.line}:${identifier.position.column}:Cannot use 'self' before it is initialized; assign to 'self' with a data literal first`,
+            `${posStr(identifier.position)}:Cannot use 'self' before it is initialized; assign to 'self' with a data literal first`,
         )
     }
 
@@ -853,7 +859,7 @@ export class SemanticAnalyzer {
                 const receiverType = this.inferExpressionType(expr.callee.left)
                 if (!receiverType) {
                     throw new Error(
-                        `${expr.callee.position.line}:${expr.callee.position.column}:Cannot infer type for method call receiver`,
+                        `${posStr(expr.callee.position)}:Cannot infer type for method call receiver`,
                     )
                 }
 
@@ -864,7 +870,7 @@ export class SemanticAnalyzer {
                 )
                 if (!signature) {
                     throw new Error(
-                        `${expr.position.line}:${expr.position.column}:Function/method not found '${renderFunctionSignature(
+                        `${posStr(expr.position)}:Function/method not found '${renderFunctionSignature(
                             expr.callee.right.name,
                             expr.arguments.map((arg) => arg.label ?? '_'),
                             receiverType,
@@ -916,21 +922,21 @@ export class SemanticAnalyzer {
             const arrayType = this.inferExpressionType(expr.left)
             if (!arrayType || !this.isArrayType(arrayType)) {
                 throw new Error(
-                    `${expr.position.line}:${expr.position.column}:Indexing expects an array value, got '${arrayType ?? expr.left.kind}'`,
+                    `${posStr(expr.position)}:Indexing expects an array value, got '${arrayType ?? expr.left.kind}'`,
                 )
             }
 
             const indexType = this.inferExpressionType(expr.right)
             if (indexType !== 'integer') {
                 throw new Error(
-                    `${expr.position.line}:${expr.position.column}:Array index must be integer, got '${indexType ?? expr.right.kind}'`,
+                    `${posStr(expr.position)}:Array index must be integer, got '${indexType ?? expr.right.kind}'`,
                 )
             }
 
             const elementType = this.arrayElementType(arrayType)
             if (!elementType) {
                 throw new Error(
-                    `${expr.position.line}:${expr.position.column}:Invalid array type '${arrayType}'`,
+                    `${posStr(expr.position)}:Invalid array type '${arrayType}'`,
                 )
             }
 
@@ -1031,12 +1037,12 @@ export class SemanticAnalyzer {
 
         if (expr.operator !== '.') {
             throw new Error(
-                `${expr.position.line}:${expr.position.column}:Unsupported binary operator '${expr.operator}'`,
+                `${posStr(expr.position)}:Unsupported binary operator '${expr.operator}'`,
             )
         }
         if (expr.right.kind !== 'identifier') {
             throw new Error(
-                `${expr.right.position.line}:${expr.right.position.column}:Field name must be an identifier`,
+                `${posStr(expr.right.position)}:Field name must be an identifier`,
             )
         }
         return {
@@ -1120,7 +1126,7 @@ export class SemanticAnalyzer {
         if (stmt.returnType !== undefined) return
 
         throw new Error(
-            `${stmt.position.line}:${stmt.position.column}:Immutable method '${this.currentOwnerType}.${stmt.name}' must declare a return type`,
+            `${posStr(stmt.position)}:Immutable method '${this.currentOwnerType}.${stmt.name}' must declare a return type`,
         )
     }
 
@@ -1132,7 +1138,7 @@ export class SemanticAnalyzer {
         if (stmt.returnType === undefined) return
 
         throw new Error(
-            `${stmt.position.line}:${stmt.position.column}:Inheritance initializer '${this.currentOwnerType}.${stmt.name}' must not declare a return type`,
+            `${posStr(stmt.position)}:Inheritance initializer '${this.currentOwnerType}.${stmt.name}' must not declare a return type`,
         )
     }
 
@@ -1156,7 +1162,7 @@ export class SemanticAnalyzer {
         if (!selfParameter) return
 
         throw new Error(
-            `${selfParameter.position.line}:${selfParameter.position.column}:Parameter name 'self' is reserved for the implicit receiver and may not be declared explicitly`,
+            `${posStr(selfParameter.position)}:Parameter name 'self' is reserved for the implicit receiver and may not be declared explicitly`,
         )
     }
 
@@ -1178,7 +1184,7 @@ export class SemanticAnalyzer {
         if (bodyAnalyzer.currentInheritanceInitializer) {
             if (stmt.body.value.kind !== 'data-literal') {
                 throw new Error(
-                    `${stmt.position.line}:${stmt.position.column}:Inheritance initializer shorthand body must be a data literal assigned to self`,
+                    `${posStr(stmt.position)}:Inheritance initializer shorthand body must be a data literal assigned to self`,
                 )
             }
 
@@ -1199,7 +1205,7 @@ export class SemanticAnalyzer {
         // Shorthand `=> expr` body: treat as a single implicit return.
         if (stmt.returnType === undefined) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Shorthand body '=> expr' requires a return type annotation on function '${stmt.name}'`,
+                `${posStr(stmt.position)}:Shorthand body '=> expr' requires a return type annotation on function '${stmt.name}'`,
             )
         }
 
@@ -1271,20 +1277,20 @@ export class SemanticAnalyzer {
         if (!supertypeKind) {
             const pos = objectDecl.supertypePosition ?? objectDecl.position
             throw new Error(
-                `${pos.line}:${pos.column}:Unknown supertype '${objectDecl.supertype}' for object '${objectDecl.name}'`,
+                `${posStr(pos)}:Unknown supertype '${objectDecl.supertype}' for object '${objectDecl.name}'`,
             )
         }
 
         if (supertypeKind !== 'object') {
             throw new Error(
-                `${objectDecl.position.line}:${objectDecl.position.column}:Object '${objectDecl.name}' cannot inherit from non-object type '${objectDecl.supertype}'`,
+                `${posStr(objectDecl.position)}:Object '${objectDecl.name}' cannot inherit from non-object type '${objectDecl.supertype}'`,
             )
         }
 
         if (!this.inheritableObjects.has(objectDecl.supertype)) {
             const pos = objectDecl.supertypePosition ?? objectDecl.position
             throw new Error(
-                `${pos.line}:${pos.column}:Object '${objectDecl.name}' cannot inherit from '${objectDecl.supertype}' because it has no inheritance section`,
+                `${posStr(pos)}:Object '${objectDecl.name}' cannot inherit from '${objectDecl.supertype}' because it has no inheritance section`,
             )
         }
     }
@@ -1296,7 +1302,7 @@ export class SemanticAnalyzer {
         while (current) {
             if (seen.has(current)) {
                 throw new Error(
-                    `${objectDecl.position.line}:${objectDecl.position.column}:Cyclic inheritance involving '${objectDecl.name}'`,
+                    `${posStr(objectDecl.position)}:Cyclic inheritance involving '${objectDecl.name}'`,
                 )
             }
 
@@ -1341,13 +1347,13 @@ export class SemanticAnalyzer {
 
                 if (method.returnType !== baseSignature.returnType) {
                     throw new Error(
-                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match return type '${baseSignature.returnType ?? 'void'}', got '${method.returnType ?? 'void'}'`,
+                        `${posStr(method.position)}:Override '${overrideName}' must match return type '${baseSignature.returnType ?? 'void'}', got '${method.returnType ?? 'void'}'`,
                     )
                 }
 
                 if (method.returnSemantics !== baseSignature.returnSemantics) {
                     throw new Error(
-                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match return semantics '${baseSignature.returnSemantics ?? 'unique'}', got '${method.returnSemantics ?? 'unique'}'`,
+                        `${posStr(method.position)}:Override '${overrideName}' must match return semantics '${baseSignature.returnSemantics ?? 'unique'}', got '${method.returnSemantics ?? 'unique'}'`,
                     )
                 }
 
@@ -1360,7 +1366,7 @@ export class SemanticAnalyzer {
                     )
                 ) {
                     throw new Error(
-                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match parameter types of inherited method`,
+                        `${posStr(method.position)}:Override '${overrideName}' must match parameter types of inherited method`,
                     )
                 }
 
@@ -1372,19 +1378,19 @@ export class SemanticAnalyzer {
                     )
                 ) {
                     throw new Error(
-                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match parameter semantics of inherited method`,
+                        `${posStr(method.position)}:Override '${overrideName}' must match parameter semantics of inherited method`,
                     )
                 }
 
                 if (method.visibility !== baseSignature.visibility) {
                     throw new Error(
-                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must keep visibility '${baseSignature.visibility}'`,
+                        `${posStr(method.position)}:Override '${overrideName}' must keep visibility '${baseSignature.visibility}'`,
                     )
                 }
 
                 if (overrideEffectLevel !== baseSignature.effectLevel) {
                     throw new Error(
-                        `${method.position.line}:${method.position.column}:Override '${overrideName}' must match effect level '${baseSignature.effectLevel}', got '${overrideEffectLevel}'`,
+                        `${posStr(method.position)}:Override '${overrideName}' must match effect level '${baseSignature.effectLevel}', got '${overrideEffectLevel}'`,
                     )
                 }
             }
@@ -1502,7 +1508,7 @@ export class SemanticAnalyzer {
             target.operator === '.'
         ) {
             throw new Error(
-                `${position.line}:${position.column}:Immutable method '${this.currentOwnerType}' may not assign to a field`,
+                `${posStr(position)}:Immutable method '${this.currentOwnerType}' may not assign to a field`,
             )
         }
 
@@ -1516,7 +1522,7 @@ export class SemanticAnalyzer {
             root.name !== 'self'
         ) {
             throw new Error(
-                `${position.line}:${position.column}:Object methods may not mutate external state via '${root.name}'`,
+                `${posStr(position)}:Object methods may not mutate external state via '${root.name}'`,
             )
         }
     }
@@ -1529,7 +1535,7 @@ export class SemanticAnalyzer {
         const allowed = this.allowedEffectLevel()
         if (!isEffectLevelAllowed(signature.effectLevel, allowed)) {
             throw new Error(
-                `${position.line}:${position.column}:Call to '${renderFunctionSignature(callable.name, callable.labels, callable.ownerType)}' is side-effecting (${signature.effectLevel}) and is not allowed in this method context (${allowed})`,
+                `${posStr(position)}:Call to '${renderFunctionSignature(callable.name, callable.labels, callable.ownerType)}' is side-effecting (${signature.effectLevel}) and is not allowed in this method context (${allowed})`,
             )
         }
     }
@@ -1641,19 +1647,19 @@ export class SemanticAnalyzer {
 
                 if (semantics === 'const') {
                     throw new Error(
-                        `${decl.position.line}:${decl.position.column}:Field '${field.name}' in data type '${decl.name}' cannot use 'const' semantics`,
+                        `${posStr(decl.position)}:Field '${field.name}' in data type '${decl.name}' cannot use 'const' semantics`,
                     )
                 }
 
                 if (semantics === 'ref' && !this.isReferenceType(field.type)) {
                     throw new Error(
-                        `${decl.position.line}:${decl.position.column}:Field '${field.name}' in data type '${decl.name}' cannot use 'ref' semantics with non-reference type '${field.type}'`,
+                        `${posStr(decl.position)}:Field '${field.name}' in data type '${decl.name}' cannot use 'ref' semantics with non-reference type '${field.type}'`,
                     )
                 }
 
                 if (this.isServiceType(field.type)) {
                     throw new Error(
-                        `${decl.position.line}:${decl.position.column}:Data type '${decl.name}' cannot contain service field '${field.name}' of type '${field.type}'`,
+                        `${posStr(decl.position)}:Data type '${decl.name}' cannot contain service field '${field.name}' of type '${field.type}'`,
                     )
                 }
             }
@@ -1672,7 +1678,7 @@ export class SemanticAnalyzer {
                     if (!this.isServiceType(field.type)) continue
 
                     throw new Error(
-                        `${objectDecl.position.line}:${objectDecl.position.column}:Object '${objectDecl.name}' cannot contain service field '${field.name}' of type '${field.type}'`,
+                        `${posStr(objectDecl.position)}:Object '${objectDecl.name}' cannot contain service field '${field.name}' of type '${field.type}'`,
                     )
                 }
             }
@@ -1687,7 +1693,7 @@ export class SemanticAnalyzer {
                     if (field.semantics === 'ref') continue
 
                     throw new Error(
-                        `${serviceDecl.position.line}:${serviceDecl.position.column}:Service '${serviceDecl.name}' field '${field.name}' with service type '${field.type}' must use 'ref' semantics`,
+                        `${posStr(serviceDecl.position)}:Service '${serviceDecl.name}' field '${field.name}' with service type '${field.type}' must use 'ref' semantics`,
                     )
                 }
             }
@@ -1743,7 +1749,7 @@ export class SemanticAnalyzer {
         const inferredType = this.inferExpressionType(stmt.value)
         if (!inferredType) {
             throw new Error(
-                `${stmt.position.line}:${stmt.position.column}:Cannot infer type for variable '${stmt.name}' from '${stmt.value.kind}' initializer`,
+                `${posStr(stmt.position)}:Cannot infer type for variable '${stmt.name}' from '${stmt.value.kind}' initializer`,
             )
         }
 
@@ -1836,7 +1842,7 @@ export class SemanticAnalyzer {
         if (semantics === 'ref') return
 
         throw new Error(
-            `${position.line}:${position.column}:Service variable '${name}' must be declared as 'ref', got '${semantics}'`,
+            `${posStr(position)}:Service variable '${name}' must be declared as 'ref', got '${semantics}'`,
         )
     }
 
@@ -1848,7 +1854,7 @@ export class SemanticAnalyzer {
 
             if (param.semantics !== 'ref') {
                 throw new Error(
-                    `${param.position.line}:${param.position.column}:Service parameter '${param.name}' must use 'ref' semantics`,
+                    `${posStr(param.position)}:Service parameter '${param.name}' must use 'ref' semantics`,
                 )
             }
         }
@@ -1857,7 +1863,7 @@ export class SemanticAnalyzer {
         if (stmt.returnSemantics === 'ref') return
 
         throw new Error(
-            `${stmt.position.line}:${stmt.position.column}:Function '${this.renderDiagnosticFunctionName(stmt)}' returning service type '${stmt.returnType}' must declare '-> ref ${stmt.returnType}'`,
+            `${posStr(stmt.position)}:Function '${this.renderDiagnosticFunctionName(stmt)}' returning service type '${stmt.returnType}' must declare '-> ref ${stmt.returnType}'`,
         )
     }
 
@@ -1897,7 +1903,7 @@ export class SemanticAnalyzer {
         const inferred = this.inferExpressionType(value)
         if (inferred && !this.isTypeAssignable(inferred, expected)) {
             throw new Error(
-                `${value.position.line}:${value.position.column}:Type mismatch: expected '${expected}' but got '${inferred}'`,
+                `${posStr(value.position)}:Type mismatch: expected '${expected}' but got '${inferred}'`,
             )
         }
     }
@@ -1920,7 +1926,7 @@ export class SemanticAnalyzer {
             if (!expectedFieldInfo) {
                 const pos = fieldEntry.namePosition
                 throw new Error(
-                    `${pos.line}:${pos.column}:Field ${fieldName} not found in type ${expectedType}`,
+                    `${posStr(pos)}:Field ${fieldName} not found in type ${expectedType}`,
                 )
             }
 
@@ -1936,7 +1942,7 @@ export class SemanticAnalyzer {
             ) {
                 const pos = fieldEntry.namePosition
                 throw new Error(
-                    `${pos.line}:${pos.column}:Type mismatch for field '${fieldName}': expected '${expectedFieldInfo.type}' but got '${inferredFieldType ?? fieldEntry.value.kind}'`,
+                    `${posStr(pos)}:Type mismatch for field '${fieldName}': expected '${expectedFieldInfo.type}' but got '${inferredFieldType ?? fieldEntry.value.kind}'`,
                 )
             }
         }
@@ -1944,7 +1950,7 @@ export class SemanticAnalyzer {
         for (const [fieldName, fieldInfo] of requiredFields.entries()) {
             if (!(fieldName in value.fields)) {
                 throw new Error(
-                    `${value.position.line}:${value.position.column}:Missing field '${fieldName}' for data type '${expectedType}'`,
+                    `${posStr(value.position)}:Missing field '${fieldName}' for data type '${expectedType}'`,
                 )
             }
         }
@@ -1955,13 +1961,13 @@ export class SemanticAnalyzer {
     ): void {
         if (fieldValue.kind === 'call') {
             throw new Error(
-                `${fieldValue.position.line}:${fieldValue.position.column}:Call expressions are not supported in data literal fields`,
+                `${posStr(fieldValue.position)}:Call expressions are not supported in data literal fields`,
             )
         }
 
         if (fieldValue.kind === 'array-literal') {
             throw new Error(
-                `${fieldValue.position.line}:${fieldValue.position.column}:Array literals are not supported in data literal fields`,
+                `${posStr(fieldValue.position)}:Array literals are not supported in data literal fields`,
             )
         }
 
@@ -1971,7 +1977,7 @@ export class SemanticAnalyzer {
             fieldValue.left.kind === 'call'
         ) {
             throw new Error(
-                `${fieldValue.position.line}:${fieldValue.position.column}:Call expressions are not supported in data literal fields`,
+                `${posStr(fieldValue.position)}:Call expressions are not supported in data literal fields`,
             )
         }
 
@@ -1993,7 +1999,7 @@ export class SemanticAnalyzer {
         const declaredSupertype = this.lookupObjectSupertype(expectedType)
         if (!declaredSupertype) {
             throw new Error(
-                `${superInitializer.position.line}:${superInitializer.position.column}:Type '${expectedType}' has no direct supertype for a super initializer call`,
+                `${posStr(superInitializer.position)}:Type '${expectedType}' has no direct supertype for a super initializer call`,
             )
         }
 
@@ -2006,7 +2012,7 @@ export class SemanticAnalyzer {
             callee.right.kind !== 'identifier'
         ) {
             throw new Error(
-                `${superInitializer.position.line}:${superInitializer.position.column}:Super initializer must be a direct call in the form super.name(...)`,
+                `${posStr(superInitializer.position)}:Super initializer must be a direct call in the form super.name(...)`,
             )
         }
 
@@ -2023,7 +2029,7 @@ export class SemanticAnalyzer {
 
         if (!signature || !signature.isInheritanceInitializer) {
             throw new Error(
-                `${superInitializer.position.line}:${superInitializer.position.column}:No inheritance initializer '${declaredSupertype}.${callee.right.name}' matches this call`,
+                `${posStr(superInitializer.position)}:No inheritance initializer '${declaredSupertype}.${callee.right.name}' matches this call`,
             )
         }
 
@@ -2037,7 +2043,7 @@ export class SemanticAnalyzer {
                 !this.isTypeAssignable(actualType, expectedType)
             ) {
                 throw new Error(
-                    `${argument.value.position.line}:${argument.value.position.column}:Argument ${i + 1} type mismatch for super initializer '${declaredSupertype}.${callee.right.name}': expected '${expectedType}' but got '${actualType}'`,
+                    `${posStr(argument.value.position)}:Argument ${i + 1} type mismatch for super initializer '${declaredSupertype}.${callee.right.name}': expected '${expectedType}' but got '${actualType}'`,
                 )
             }
         }
@@ -2049,14 +2055,14 @@ export class SemanticAnalyzer {
     ) {
         if (!this.isArrayType(expectedType)) {
             throw new Error(
-                `${value.position.line}:${value.position.column}:Type mismatch: expected '${expectedType}' but got 'array-literal'`,
+                `${posStr(value.position)}:Type mismatch: expected '${expectedType}' but got 'array-literal'`,
             )
         }
 
         const elementType = this.arrayElementType(expectedType)
         if (!elementType) {
             throw new Error(
-                `${value.position.line}:${value.position.column}:Invalid array type '${expectedType}'`,
+                `${posStr(value.position)}:Invalid array type '${expectedType}'`,
             )
         }
 
@@ -2067,7 +2073,7 @@ export class SemanticAnalyzer {
                 !this.isTypeAssignable(inferredElementType, elementType)
             ) {
                 throw new Error(
-                    `${element.position.line}:${element.position.column}:Type mismatch for array element: expected '${elementType}' but got '${inferredElementType ?? element.kind}'`,
+                    `${posStr(element.position)}:Type mismatch for array element: expected '${elementType}' but got '${inferredElementType ?? element.kind}'`,
                 )
             }
         }
@@ -2088,19 +2094,19 @@ export class SemanticAnalyzer {
                 const subjectType = this.inferExpressionType(value.subject)
                 if (!subjectType) {
                     throw new Error(
-                        `${value.subject.position.line}:${value.subject.position.column}:Cannot infer type for when subject`,
+                        `${posStr(value.subject.position)}:Cannot infer type for when subject`,
                     )
                 }
 
                 if (subjectType === 'string') {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:when does not yet support string subject patterns`,
+                        `${posStr(value.position)}:when does not yet support string subject patterns`,
                     )
                 }
 
                 if (value.branches.length === 0) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:when requires at least one branch`,
+                        `${posStr(value.position)}:when requires at least one branch`,
                     )
                 }
 
@@ -2109,12 +2115,12 @@ export class SemanticAnalyzer {
                 )
                 if (wildcardIndex === -1) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:when expression requires a wildcard '_' branch for exhaustiveness`,
+                        `${posStr(value.position)}:when expression requires a wildcard '_' branch for exhaustiveness`,
                     )
                 }
                 if (wildcardIndex !== value.branches.length - 1) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Wildcard pattern '_' must be the last branch in when expression`,
+                        `${posStr(value.position)}:Wildcard pattern '_' must be the last branch in when expression`,
                     )
                 }
 
@@ -2126,13 +2132,13 @@ export class SemanticAnalyzer {
                         )
                         if (!patternType) {
                             throw new Error(
-                                `${branch.pattern.position.line}:${branch.pattern.position.column}:Cannot infer type for when pattern`,
+                                `${posStr(branch.pattern.position)}:Cannot infer type for when pattern`,
                             )
                         }
 
                         if (!this.isTypeAssignable(patternType, subjectType)) {
                             throw new Error(
-                                `${branch.pattern.position.line}:${branch.pattern.position.column}:when pattern type mismatch: expected '${subjectType}' but got '${patternType}'`,
+                                `${posStr(branch.pattern.position)}:when pattern type mismatch: expected '${subjectType}' but got '${patternType}'`,
                             )
                         }
                     }
@@ -2140,7 +2146,7 @@ export class SemanticAnalyzer {
                     const branchType = this.inferExpressionType(branch.value)
                     if (!branchType) {
                         throw new Error(
-                            `${branch.value.position.line}:${branch.value.position.column}:Cannot infer type for when branch value`,
+                            `${posStr(branch.value.position)}:Cannot infer type for when branch value`,
                         )
                     }
 
@@ -2151,7 +2157,7 @@ export class SemanticAnalyzer {
 
                     if (!this.isTypeAssignable(branchType, resultType)) {
                         throw new Error(
-                            `${branch.value.position.line}:${branch.value.position.column}:when branch type mismatch: expected '${resultType}' but got '${branchType}'`,
+                            `${posStr(branch.value.position)}:when branch type mismatch: expected '${resultType}' but got '${branchType}'`,
                         )
                     }
                 }
@@ -2161,14 +2167,14 @@ export class SemanticAnalyzer {
             case 'array-literal': {
                 if (value.elements.length === 0) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Cannot infer type for empty array literal; add an explicit annotation`,
+                        `${posStr(value.position)}:Cannot infer type for empty array literal; add an explicit annotation`,
                     )
                 }
 
                 const firstType = this.inferExpressionType(value.elements[0])
                 if (!firstType) {
                     throw new Error(
-                        `${value.elements[0].position.line}:${value.elements[0].position.column}:Cannot infer type for array element`,
+                        `${posStr(value.elements[0].position)}:Cannot infer type for array element`,
                     )
                 }
 
@@ -2179,7 +2185,7 @@ export class SemanticAnalyzer {
                         !this.isTypeAssignable(nextType, firstType)
                     ) {
                         throw new Error(
-                            `${value.elements[i].position.line}:${value.elements[i].position.column}:Array literal element type mismatch: expected '${firstType}' but got '${nextType ?? value.elements[i].kind}'`,
+                            `${posStr(value.elements[i].position)}:Array literal element type mismatch: expected '${firstType}' but got '${nextType ?? value.elements[i].kind}'`,
                         )
                     }
                 }
@@ -2199,13 +2205,13 @@ export class SemanticAnalyzer {
                     const calleeBinding = this.lookupBinding(value.callee.name)
                     if (!calleeBinding) {
                         throw new Error(
-                            `${value.callee.position.line}:${value.callee.position.column}:Unknown identifier '${value.callee.name}'`,
+                            `${posStr(value.callee.position)}:Unknown identifier '${value.callee.name}'`,
                         )
                     }
 
                     if (calleeBinding.type !== 'func') {
                         throw new Error(
-                            `${value.callee.position.line}:${value.callee.position.column}:Cannot call non-function identifier '${value.callee.name}'`,
+                            `${posStr(value.callee.position)}:Cannot call non-function identifier '${value.callee.name}'`,
                         )
                     }
 
@@ -2221,7 +2227,7 @@ export class SemanticAnalyzer {
                             overloads,
                         )
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Function/method not found '${renderFunctionSignature(calleeName, argumentLabels)}'.${suggestion}`,
+                            `${posStr(value.position)}:Function/method not found '${renderFunctionSignature(calleeName, argumentLabels)}'.${suggestion}`,
                         )
                     }
                 } else if (
@@ -2234,7 +2240,7 @@ export class SemanticAnalyzer {
                     )
                     if (!receiverType) {
                         throw new Error(
-                            `${value.callee.position.line}:${value.callee.position.column}:Cannot infer type for method call receiver`,
+                            `${posStr(value.callee.position)}:Cannot infer type for method call receiver`,
                         )
                     }
 
@@ -2256,12 +2262,12 @@ export class SemanticAnalyzer {
                             receiverType,
                         )
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Function/method not found '${renderFunctionSignature(calleeName, argumentLabels, receiverType)}'.${suggestion}`,
+                            `${posStr(value.position)}:Function/method not found '${renderFunctionSignature(calleeName, argumentLabels, receiverType)}'.${suggestion}`,
                         )
                     }
                 } else {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Unsupported call target '${value.callee.kind}'`,
+                        `${posStr(value.position)}:Unsupported call target '${value.callee.kind}'`,
                     )
                 }
 
@@ -2271,7 +2277,7 @@ export class SemanticAnalyzer {
                     this.currentOwnerType !== signature.ownerType
                 ) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Method '${renderFunctionSignature(calleeName, argumentLabels, signature.ownerType)}' is helper and only callable inside '${signature.ownerType}'`,
+                        `${posStr(value.position)}:Method '${renderFunctionSignature(calleeName, argumentLabels, signature.ownerType)}' is helper and only callable inside '${signature.ownerType}'`,
                     )
                 }
 
@@ -2280,7 +2286,7 @@ export class SemanticAnalyzer {
                     !options?.allowInheritanceInitializerCall
                 ) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Inheritance initializer '${renderFunctionSignature(calleeName, argumentLabels, signature.ownerType)}' cannot be called directly; use it as the first entry in a subtype object literal`,
+                        `${posStr(value.position)}:Inheritance initializer '${renderFunctionSignature(calleeName, argumentLabels, signature.ownerType)}' cannot be called directly; use it as the first entry in a subtype object literal`,
                     )
                 }
 
@@ -2300,14 +2306,14 @@ export class SemanticAnalyzer {
 
                 if (value.arguments.length !== signature.arity) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Function '${calleeName}' expects ${signature.arity} argument(s), got ${value.arguments.length}`,
+                        `${posStr(value.position)}:Function '${calleeName}' expects ${signature.arity} argument(s), got ${value.arguments.length}`,
                     )
                 }
 
                 for (const arg of value.arguments) {
                     if (arg.value.kind === 'data-literal') {
                         throw new Error(
-                            `${arg.value.position.line}:${arg.value.position.column}:Data literal arguments are not supported in function calls`,
+                            `${posStr(arg.value.position)}:Data literal arguments are not supported in function calls`,
                         )
                     }
                     this.inferExpressionType(arg.value)
@@ -2325,14 +2331,14 @@ export class SemanticAnalyzer {
                         !this.isTypeAssignable(actualType, expectedType)
                     ) {
                         throw new Error(
-                            `${value.arguments[i].value.position.line}:${value.arguments[i].value.position.column}:Argument ${i + 1} type mismatch for function '${calleeName}': expected '${expectedType}' but got '${actualType}'`,
+                            `${posStr(value.arguments[i].value.position)}:Argument ${i + 1} type mismatch for function '${calleeName}': expected '${expectedType}' but got '${actualType}'`,
                         )
                     }
                 }
 
                 if (signature.returnType === undefined) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Function '${calleeName}' has no return type and cannot be used as a value`,
+                        `${posStr(value.position)}:Function '${calleeName}' has no return type and cannot be used as a value`,
                     )
                 }
 
@@ -2344,7 +2350,7 @@ export class SemanticAnalyzer {
                 const binding = this.lookupBinding(value.name)
                 if (!binding) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Unknown identifier '${value.name}'`,
+                        `${posStr(value.position)}:Unknown identifier '${value.name}'`,
                     )
                 }
                 return binding.type
@@ -2354,21 +2360,21 @@ export class SemanticAnalyzer {
                     const arrayType = this.inferExpressionType(value.left)
                     if (!arrayType || !this.isArrayType(arrayType)) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Indexing expects an array value, got '${arrayType ?? value.left.kind}'`,
+                            `${posStr(value.position)}:Indexing expects an array value, got '${arrayType ?? value.left.kind}'`,
                         )
                     }
 
                     const indexType = this.inferExpressionType(value.right)
                     if (indexType !== 'integer') {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Array index must be integer, got '${indexType ?? value.right.kind}'`,
+                            `${posStr(value.position)}:Array index must be integer, got '${indexType ?? value.right.kind}'`,
                         )
                     }
 
                     const elementType = this.arrayElementType(arrayType)
                     if (!elementType) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Invalid array type '${arrayType}'`,
+                            `${posStr(value.position)}:Invalid array type '${arrayType}'`,
                         )
                     }
 
@@ -2381,7 +2387,7 @@ export class SemanticAnalyzer {
 
                     if (!leftType || !rightType) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Cannot infer operand type for '+'`,
+                            `${posStr(value.position)}:Cannot infer operand type for '+'`,
                         )
                     }
 
@@ -2400,12 +2406,12 @@ export class SemanticAnalyzer {
                         rightType !== 'integer'
                     ) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Operator '+' expects string or integer operands, got '${leftType}' and '${rightType}'`,
+                            `${posStr(value.position)}:Operator '+' expects string or integer operands, got '${leftType}' and '${rightType}'`,
                         )
                     }
 
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Operator '+' requires matching operand types, got '${leftType}' and '${rightType}'`,
+                        `${posStr(value.position)}:Operator '+' requires matching operand types, got '${leftType}' and '${rightType}'`,
                     )
                 }
 
@@ -2419,7 +2425,7 @@ export class SemanticAnalyzer {
 
                     if (leftType !== 'integer' || rightType !== 'integer') {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' expects integer operands, got '${leftType}' and '${rightType}'`,
+                            `${posStr(value.position)}:Operator '${value.operator}' expects integer operands, got '${leftType}' and '${rightType}'`,
                         )
                     }
 
@@ -2432,13 +2438,13 @@ export class SemanticAnalyzer {
 
                     if (!leftType || !rightType) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Cannot infer operand type for '${value.operator}'`,
+                            `${posStr(value.position)}:Cannot infer operand type for '${value.operator}'`,
                         )
                     }
 
                     if (leftType !== rightType) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' requires matching operand types, got '${leftType}' and '${rightType}'`,
+                            `${posStr(value.position)}:Operator '${value.operator}' requires matching operand types, got '${leftType}' and '${rightType}'`,
                         )
                     }
 
@@ -2456,7 +2462,7 @@ export class SemanticAnalyzer {
 
                     if (leftType !== 'integer' || rightType !== 'integer') {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' expects integer operands, got '${leftType}' and '${rightType}'`,
+                            `${posStr(value.position)}:Operator '${value.operator}' expects integer operands, got '${leftType}' and '${rightType}'`,
                         )
                     }
 
@@ -2472,7 +2478,7 @@ export class SemanticAnalyzer {
                         rightType !== 'truthvalue'
                     ) {
                         throw new Error(
-                            `${value.position.line}:${value.position.column}:Operator '${value.operator}' expects truthvalue operands, got '${leftType}' and '${rightType}'`,
+                            `${posStr(value.position)}:Operator '${value.operator}' expects truthvalue operands, got '${leftType}' and '${rightType}'`,
                         )
                     }
 
@@ -2484,12 +2490,12 @@ export class SemanticAnalyzer {
                 const objectType = this.inferExpressionType(value.left)
                 if (!objectType) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Cannot infer type for dot access object`,
+                        `${posStr(value.position)}:Cannot infer type for dot access object`,
                     )
                 }
                 if (!this.lookupDataType(objectType)) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Cannot resolve field '${value.right.name}' on non-data type '${objectType}'`,
+                        `${posStr(value.position)}:Cannot resolve field '${value.right.name}' on non-data type '${objectType}'`,
                     )
                 }
                 const fieldInfo = this.lookupFieldInfo(
@@ -2498,7 +2504,7 @@ export class SemanticAnalyzer {
                 )
                 if (!fieldInfo) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Unknown field '${value.right.name}' on data type '${objectType}'`,
+                        `${posStr(value.position)}:Unknown field '${value.right.name}' on data type '${objectType}'`,
                     )
                 }
                 return fieldInfo.type
@@ -2507,12 +2513,12 @@ export class SemanticAnalyzer {
                 const copiedType = this.inferExpressionType(value.value)
                 if (!copiedType) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Cannot infer type for copy value`,
+                        `${posStr(value.position)}:Cannot infer type for copy value`,
                     )
                 }
                 if (!this.isReferenceType(copiedType)) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:copy(...) expects a reference-counted value, got '${copiedType}'`,
+                        `${posStr(value.position)}:copy(...) expects a reference-counted value, got '${copiedType}'`,
                     )
                 }
                 return copiedType
@@ -2534,20 +2540,20 @@ export class SemanticAnalyzer {
             const rootIdentifier = this.extractRootIdentifier(target)
             if (!rootIdentifier) {
                 throw new Error(
-                    `${target.position.line}:${target.position.column}:Invalid field assignment target`,
+                    `${posStr(target.position)}:Invalid field assignment target`,
                 )
             }
 
             const binding = this.lookupBinding(rootIdentifier.name)
             if (!binding) {
                 throw new Error(
-                    `${rootIdentifier.position.line}:${rootIdentifier.position.column}:Unknown identifier '${rootIdentifier.name}'`,
+                    `${posStr(rootIdentifier.position)}:Unknown identifier '${rootIdentifier.name}'`,
                 )
             }
 
             if (binding.semantics === 'const') {
                 throw new Error(
-                    `${rootIdentifier.position.line}:${rootIdentifier.position.column}:Cannot mutate field through const variable '${rootIdentifier.name}'`,
+                    `${posStr(rootIdentifier.position)}:Cannot mutate field through const variable '${rootIdentifier.name}'`,
                 )
             }
         }
@@ -2567,7 +2573,7 @@ export class SemanticAnalyzer {
                 const binding = this.lookupBinding(value.name)
                 if (!binding) {
                     throw new Error(
-                        `${value.position.line}:${value.position.column}:Unknown identifier '${value.name}'`,
+                        `${posStr(value.position)}:Unknown identifier '${value.name}'`,
                     )
                 }
                 return binding.semantics
@@ -2626,7 +2632,7 @@ export class SemanticAnalyzer {
         const suggestionExpr = this.formatCopySuggestionValue(rewrittenValue)
 
         throw new Error(
-            `${position.line}:${position.column}:Cross-semantics assignment requires explicit copy(...). Use copy(${suggestionExpr}) to state intent.`,
+            `${posStr(position)}:Cross-semantics assignment requires explicit copy(...). Use copy(${suggestionExpr}) to state intent.`,
         )
     }
 
@@ -2660,13 +2666,13 @@ export class SemanticAnalyzer {
         const binding = this.lookupBinding(identifier.name)
         if (!binding) {
             throw new Error(
-                `${position.line}:${position.column}:Unknown identifier '${identifier.name}'`,
+                `${posStr(position)}:Unknown identifier '${identifier.name}'`,
             )
         }
 
         if (binding.semantics === 'const') {
             throw new Error(
-                `${position.line}:${position.column}:Cannot assign to const variable '${identifier.name}'`,
+                `${posStr(position)}:Cannot assign to const variable '${identifier.name}'`,
             )
         }
     }
@@ -2689,7 +2695,7 @@ export class SemanticAnalyzer {
     ): void {
         if (this.bindings.has(name)) {
             throw new Error(
-                `${position.line}:${position.column}:Variable '${name}' is already declared in this scope`,
+                `${posStr(position)}:Variable '${name}' is already declared in this scope`,
             )
         }
 

@@ -25,7 +25,11 @@ export class ExpressionParser {
                 operator: '||',
                 left: expr,
                 right,
-                position: { line: op.line, column: op.column },
+                position: {
+                    file: this.stream.file,
+                    line: op.line,
+                    column: op.column,
+                },
             }
         }
 
@@ -43,7 +47,11 @@ export class ExpressionParser {
                 operator: '&&',
                 left: expr,
                 right,
-                position: { line: op.line, column: op.column },
+                position: {
+                    file: this.stream.file,
+                    line: op.line,
+                    column: op.column,
+                },
             }
         }
 
@@ -61,7 +69,11 @@ export class ExpressionParser {
                 operator: op.operator,
                 left: expr,
                 right,
-                position: { line: op.line, column: op.column },
+                position: {
+                    file: this.stream.file,
+                    line: op.line,
+                    column: op.column,
+                },
             }
         }
 
@@ -79,7 +91,11 @@ export class ExpressionParser {
                 operator: op.operator,
                 left: expr,
                 right,
-                position: { line: op.line, column: op.column },
+                position: {
+                    file: this.stream.file,
+                    line: op.line,
+                    column: op.column,
+                },
             }
         }
 
@@ -101,7 +117,11 @@ export class ExpressionParser {
                 operator: op.operator,
                 left: expr,
                 right,
-                position: { line: op.line, column: op.column },
+                position: {
+                    file: this.stream.file,
+                    line: op.line,
+                    column: op.column,
+                },
             }
         }
 
@@ -123,7 +143,11 @@ export class ExpressionParser {
                 operator: op.operator,
                 left: expr,
                 right,
-                position: { line: op.line, column: op.column },
+                position: {
+                    file: this.stream.file,
+                    line: op.line,
+                    column: op.column,
+                },
             }
         }
 
@@ -153,7 +177,11 @@ export class ExpressionParser {
                     kind: 'call',
                     callee: expr,
                     arguments: args,
-                    position: { line: lparen.line, column: lparen.column },
+                    position: {
+                        file: this.stream.file,
+                        line: lparen.line,
+                        column: lparen.column,
+                    },
                 }
                 continue
             }
@@ -166,7 +194,11 @@ export class ExpressionParser {
                     operator: '.',
                     left: expr,
                     right,
-                    position: { line: dotToken.line, column: dotToken.column },
+                    position: {
+                        file: this.stream.file,
+                        line: dotToken.line,
+                        column: dotToken.column,
+                    },
                 }
                 expr = binary
                 continue
@@ -181,7 +213,11 @@ export class ExpressionParser {
                     operator: '[]',
                     left: expr,
                     right: indexExpr,
-                    position: { line: lbracket.line, column: lbracket.column },
+                    position: {
+                        file: this.stream.file,
+                        line: lbracket.line,
+                        column: lbracket.column,
+                    },
                 }
                 continue
             }
@@ -217,32 +253,48 @@ export class ExpressionParser {
                     return {
                         kind: 'identifier',
                         name: token.keyword,
-                        position: { line: token.line, column: token.column },
+                        position: {
+                            file: this.stream.file,
+                            line: token.line,
+                            column: token.column,
+                        },
                     }
                 }
                 throw new Error(
-                    `${token.line}:${token.column}:Unexpected keyword [${token.keyword}] in expression`,
+                    `${this.stream.file}:${token.line}:${token.column}:Unexpected keyword [${token.keyword}] in expression`,
                 )
             case 'INTEGER_LITERAL':
                 this.stream.next()
                 return {
                     kind: 'integer',
                     value: token.value,
-                    position: { line: token.line, column: token.column },
+                    position: {
+                        file: this.stream.file,
+                        line: token.line,
+                        column: token.column,
+                    },
                 }
             case 'TRUTH_LITERAL':
                 this.stream.next()
                 return {
                     kind: 'truthvalue',
                     value: token.value,
-                    position: { line: token.line, column: token.column },
+                    position: {
+                        file: this.stream.file,
+                        line: token.line,
+                        column: token.column,
+                    },
                 }
             case 'STRING_LITERAL':
                 this.stream.next()
                 return {
                     kind: 'string',
                     value: token.value,
-                    position: { line: token.line, column: token.column },
+                    position: {
+                        file: this.stream.file,
+                        line: token.line,
+                        column: token.column,
+                    },
                 }
             case 'IDENTIFIER':
                 this.stream.next()
@@ -253,13 +305,21 @@ export class ExpressionParser {
                     return {
                         kind: 'copy',
                         value,
-                        position: { line: token.line, column: token.column },
+                        position: {
+                            file: this.stream.file,
+                            line: token.line,
+                            column: token.column,
+                        },
                     }
                 }
                 return {
                     kind: 'identifier',
                     name: token.identifier,
-                    position: { line: token.line, column: token.column },
+                    position: {
+                        file: this.stream.file,
+                        line: token.line,
+                        column: token.column,
+                    },
                 }
             case 'PUNCTUATION':
                 if (token.symbol === '(') {
@@ -286,7 +346,11 @@ export class ExpressionParser {
                     return {
                         kind: 'array-literal',
                         elements,
-                        position: { line: token.line, column: token.column },
+                        position: {
+                            file: this.stream.file,
+                            line: token.line,
+                            column: token.column,
+                        },
                     }
                 }
 
@@ -308,7 +372,7 @@ export class ExpressionParser {
                                 )
                             ) {
                                 throw new Error(
-                                    `${maybeSuperInitializer.position.line}:${maybeSuperInitializer.position.column}:Expected super initializer call 'super.name(...)' as the first literal entry`,
+                                    `${this.stream.file}:${maybeSuperInitializer.position.line}:${maybeSuperInitializer.position.column}:Expected super initializer call 'super.name(...)' as the first literal entry`,
                                 )
                             }
 
@@ -336,6 +400,7 @@ export class ExpressionParser {
                         fields[fieldName] = {
                             value: fieldValue,
                             namePosition: {
+                                file: this.stream.file,
                                 line: fieldNameToken.line,
                                 column: fieldNameToken.column,
                             },
@@ -352,16 +417,20 @@ export class ExpressionParser {
                         kind: 'data-literal',
                         fields,
                         superInitializer,
-                        position: { line: token.line, column: token.column },
+                        position: {
+                            file: this.stream.file,
+                            line: token.line,
+                            column: token.column,
+                        },
                     }
                 } else {
                     throw new Error(
-                        `${token.line}:${token.column}:Unexpected punctuation [${token.symbol}] in expression`,
+                        `${this.stream.file}:${token.line}:${token.column}:Unexpected punctuation [${token.symbol}] in expression`,
                     )
                 }
             default:
                 throw new Error(
-                    `${token?.line}:${token?.column}:Unexpected token [${token?.kind}] in expression`,
+                    `${this.stream.file}:${token?.line}:${token?.column}:Unexpected token [${token?.kind}] in expression`,
                 )
         }
     }
@@ -417,7 +486,11 @@ export class ExpressionParser {
             kind: 'when',
             subject,
             branches,
-            position: { line: whenToken.line, column: whenToken.column },
+            position: {
+                file: this.stream.file,
+                line: whenToken.line,
+                column: whenToken.column,
+            },
         }
     }
 

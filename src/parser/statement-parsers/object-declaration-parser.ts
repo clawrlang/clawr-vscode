@@ -3,6 +3,7 @@ import type {
     ASTObjectDeclaration,
     ASTObjectField,
     ASTObjectSection,
+    ASTPosition,
     ASTServiceDeclaration,
     ASTVisibility,
 } from '../../ast'
@@ -23,14 +24,22 @@ export class ObjectDeclarationParser {
         visibility: ASTVisibility = 'public',
     ): ASTObjectDeclaration | ASTServiceDeclaration {
         let isService = false
-        let position: { line: number; column: number }
+        let position: ASTPosition
 
         if (this.stream.isNext('KEYWORD', 'object')) {
             const t = this.stream.expect('KEYWORD', 'object')
-            position = { line: t.line, column: t.column }
+            position = {
+                file: this.stream.file,
+                line: t.line,
+                column: t.column,
+            }
         } else {
             const t = this.stream.expect('KEYWORD', 'service')
-            position = { line: t.line, column: t.column }
+            position = {
+                file: this.stream.file,
+                line: t.line,
+                column: t.column,
+            }
             isService = true
         }
 
@@ -38,12 +47,13 @@ export class ObjectDeclarationParser {
 
         // Optional supertype `Name: Super` (only for object, not service)
         let supertype: string | undefined
-        let supertypePosition: { line: number; column: number } | undefined
+        let supertypePosition: ASTPosition | undefined
         if (!isService && this.stream.isNext('PUNCTUATION', ':')) {
             this.stream.expect('PUNCTUATION', ':')
             const supertypeToken = this.stream.expect('IDENTIFIER')
             supertype = supertypeToken.identifier
             supertypePosition = {
+                file: this.stream.file,
                 line: supertypeToken.line,
                 column: supertypeToken.column,
             }
@@ -177,6 +187,7 @@ export class ObjectDeclarationParser {
             name: fieldNameToken.identifier,
             type: fieldType,
             position: {
+                file: this.stream.file,
                 line: fieldNameToken.line,
                 column: fieldNameToken.column,
             },

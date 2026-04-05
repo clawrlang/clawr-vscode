@@ -1,6 +1,7 @@
 // AST for Clawr data structures and related constructs
 
 export interface ASTPosition {
+    file?: string
     line: number
     column: number
 }

@@ -51,7 +51,11 @@ export class FunctionDeclarationParser {
                 returnType,
                 returnSemantics,
                 body: { kind: 'expression', value },
-                position: { line: funcToken.line, column: funcToken.column },
+                position: {
+                    file: this.stream.file,
+                    line: funcToken.line,
+                    column: funcToken.column,
+                },
             }
         }
 
@@ -78,7 +82,11 @@ export class FunctionDeclarationParser {
             returnType,
             returnSemantics,
             body: { kind: 'block', statements },
-            position: { line: funcToken.line, column: funcToken.column },
+            position: {
+                file: this.stream.file,
+                line: funcToken.line,
+                column: funcToken.column,
+            },
         }
     }
 
@@ -129,6 +137,7 @@ export class FunctionDeclarationParser {
                 type: paramType,
                 semantics,
                 position: {
+                    file: this.stream.file,
                     line: firstToken.line,
                     column: firstToken.column,
                 },

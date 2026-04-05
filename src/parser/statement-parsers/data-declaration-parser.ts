@@ -1,4 +1,4 @@
-import { ASTDataDeclaration } from '../../ast'
+import { ASTDataDeclaration, ASTPosition } from '../../ast'
 import { TokenStream } from '../../lexer'
 
 export class DataDeclarationParser {
@@ -17,7 +17,7 @@ export class DataDeclarationParser {
             semantics: 'const' | 'mut' | 'ref'
             name: string
             type: string
-            position: { line: number; column: number }
+            position: ASTPosition
         }[] = []
         while (!this.stream.isNext('PUNCTUATION', '}')) {
             let fieldSemantics: 'const' | 'mut' | 'ref' = 'mut'
@@ -40,6 +40,7 @@ export class DataDeclarationParser {
                 name: fieldName,
                 type: fieldType,
                 position: {
+                    file: this.stream.file,
                     line: fieldNameToken.line,
                     column: fieldNameToken.column,
                 },
@@ -56,7 +57,11 @@ export class DataDeclarationParser {
             name,
             visibility: 'public',
             fields,
-            position: { line: token.line, column: token.column },
+            position: {
+                file: this.stream.file,
+                line: token.line,
+                column: token.column,
+            },
         }
     }
 }

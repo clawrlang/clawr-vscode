@@ -15,7 +15,7 @@ export class PrintStatementParser {
         return {
             kind: 'print',
             value: new ExpressionParser(this.stream).parse(),
-            position: { line: token.line, column: token.column },
+            position: { file: this.stream.file, line: token.line, column: token.column },
         }
     }
 }
