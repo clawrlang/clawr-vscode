@@ -558,7 +558,7 @@ function registerDiagnostics(profiler: DiagnosticsProfiler): vscode.Disposable {
         const nextRun = (diagnosticRunId.get(key) ?? 0) + 1
         diagnosticRunId.set(key, nextRun)
 
-        const timer = setTimeout(() => {
+        const timer = setTimeout(async () => {
             pendingTimers.delete(key)
 
             if (diagnosticRunId.get(key) !== nextRun) return
@@ -588,7 +588,21 @@ function registerDiagnostics(profiler: DiagnosticsProfiler): vscode.Disposable {
                     new TokenStream(source, document.uri.fsPath),
                 )
                 const ast = parser.parse()
-                new SemanticAnalyzer(ast).analyze()
+
+                const importedPrelude =
+                    await collectImportedDataDeclarationsForDiagnostics(
+                        ast,
+                        document,
+                    )
+
+                if (diagnosticRunId.get(key) !== nextRun) return
+
+                const diagnosticAst: ASTProgram = {
+                    ...ast,
+                    body: [...importedPrelude, ...ast.body],
+                }
+
+                new SemanticAnalyzer(diagnosticAst).analyze()
                 diagnostics.delete(document.uri)
                 profiler.record({
                     fileName: document.fileName,
@@ -668,6 +682,93 @@ function registerDiagnostics(profiler: DiagnosticsProfiler): vscode.Disposable {
         changeListener.dispose()
         closeListener.dispose()
     })
+}
+
+async function collectImportedDataDeclarationsForDiagnostics(
+    program: ASTProgram,
+    document: vscode.TextDocument,
+): Promise<ASTDataDeclaration[]> {
+    const importedDeclarations: ASTDataDeclaration[] = []
+    const importedNames = new Set<string>()
+    const currentAbs = path.resolve(document.uri.fsPath)
+
+    for (const imp of program.imports) {
+        let importedFile: string
+        try {
+            importedFile = resolveImportPath(currentAbs, imp.modulePath)
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : String(error)
+            throw new Error(
+                `${imp.position.line}:${imp.position.column}:${message}`,
+            )
+        }
+
+        const source = await readWorkspaceFileText(importedFile, document)
+        if (!source) {
+            throw new Error(
+                `${imp.position.line}:${imp.position.column}:Unable to read imported module '${imp.modulePath}'`,
+            )
+        }
+
+        const importedProgram = new Parser(
+            new TokenStream(source, importedFile),
+        ).parse()
+
+        const publicSymbols = new Set<string>()
+        const helperSymbols = new Set<string>()
+        const exportedData = new Map<string, ASTDataDeclaration>()
+
+        for (const stmt of importedProgram.body) {
+            const isTopLevelNamedDecl =
+                stmt.kind === 'data-decl' ||
+                stmt.kind === 'func-decl' ||
+                stmt.kind === 'object-decl' ||
+                stmt.kind === 'service-decl'
+
+            if (!isTopLevelNamedDecl) continue
+
+            if (stmt.visibility === 'helper') {
+                helperSymbols.add(stmt.name)
+                continue
+            }
+
+            publicSymbols.add(stmt.name)
+
+            if (stmt.kind === 'data-decl') {
+                exportedData.set(stmt.name, stmt)
+            }
+        }
+
+        for (const item of imp.items) {
+            if (!publicSymbols.has(item.name)) {
+                if (helperSymbols.has(item.name)) {
+                    throw new Error(
+                        `${item.position.line}:${item.position.column}:Imported symbol '${item.name}' is helper-only in '${imp.modulePath}'`,
+                    )
+                }
+
+                throw new Error(
+                    `${item.position.line}:${item.position.column}:Imported symbol '${item.name}' does not exist in '${imp.modulePath}'`,
+                )
+            }
+
+            const exportedDecl = exportedData.get(item.name)
+            if (!exportedDecl) continue
+
+            const localName = item.alias ?? item.name
+            if (importedNames.has(localName)) continue
+
+            importedNames.add(localName)
+            importedDeclarations.push({
+                ...exportedDecl,
+                name: localName,
+                visibility: 'helper',
+            })
+        }
+    }
+
+    return importedDeclarations
 }
 
 function toDiagnostic(
