@@ -86,6 +86,24 @@ describe('SemanticAnalyzer', () => {
                 },
             ])
         })
+
+        it('rejects duplicate type declarations across object/service/data', () => {
+            expect(() =>
+                analyze('object DuplicatedName {}\nservice DuplicatedName {}'),
+            ).toThrow(
+                "test.clawr:2:1:Type 'DuplicatedName' is already declared",
+            )
+        })
+
+        it('rejects duplicate function declarations with the same signature', () => {
+            expect(() =>
+                analyze(
+                    'func duplicatedName() -> integer { return 42 }\nfunc duplicatedName() {}',
+                ),
+            ).toThrow(
+                "test.clawr:2:1:Function 'duplicatedName()' is already declared",
+            )
+        })
     })
 
     describe('data field semantics', () => {
@@ -145,7 +163,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects call expressions in data literal fields', () => {
             expect(() =>
                 analyze(
-                    'func getValue() -> truthvalue { return true }\ndata Point { x: truthvalue y: truthvalue }\nconst p: Point = { x: getValue(), y: true }',
+                    'func getValue() -> truthvalue { return true }\ndata Point { x: truthvalue, y: truthvalue }\nconst p: Point = { x: getValue(), y: true }',
                 ),
             ).toThrow(
                 'Call expressions are not supported in data literal fields',
@@ -165,7 +183,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects nested call expressions in data literal fields', () => {
             expect(() =>
                 analyze(
-                    'func getValue() -> truthvalue { return true }\ndata Point { x: truthvalue y: truthvalue }\ndata Quad { a: Point b: Point }\nconst q: Quad = { a: { x: getValue(), y: true }, b: { x: true, y: true } }',
+                    'func getValue() -> truthvalue { return true }\ndata Point { x: truthvalue, y: truthvalue }\ndata Quad { a: Point, b: Point }\nconst q: Quad = { a: { x: getValue(), y: true }, b: { x: true, y: true } }',
                 ),
             ).toThrow(
                 'Call expressions are not supported in data literal fields',

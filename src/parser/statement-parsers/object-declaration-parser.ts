@@ -180,6 +180,14 @@ export class ObjectDeclarationParser {
         // Optional comma separator between fields
         if (this.stream.isNext('PUNCTUATION', ',')) {
             this.stream.next()
+        } else if (
+            !this.stream.isNext('NEWLINE') &&
+            !this.isSectionBoundary()
+        ) {
+            const next = this.stream.peek()!
+            throw new Error(
+                `${this.stream.file}:${next.line}:${next.column}:Expected ',' or newline to separate fields`,
+            )
         }
 
         return {

@@ -451,7 +451,7 @@ describe('Parser Tests', () => {
     })
 
     it('parses while loops with break and continue', () => {
-        const program = 'while ambiguous { continue break }'
+        const program = 'while ambiguous { continue\nbreak }'
         const ast = parse(program)
         expect(ast).toMatchObject({
             body: [

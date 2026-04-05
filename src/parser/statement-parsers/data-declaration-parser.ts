@@ -49,6 +49,11 @@ export class DataDeclarationParser {
                 this.stream.next()
             } else if (this.stream.isNext('NEWLINE')) {
                 this.stream.next({ stopAtNewline: true })
+            } else if (!this.stream.isNext('PUNCTUATION', '}')) {
+                const next = this.stream.peek()!
+                throw new Error(
+                    `${this.stream.file}:${next.line}:${next.column}:Expected ',' or newline to separate fields`,
+                )
             }
         }
         this.stream.expect('PUNCTUATION', '}')

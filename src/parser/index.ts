@@ -48,6 +48,13 @@ export class Parser {
                 body.push(stmt)
             }
 
+            if (this.stream.peek() && !this.stream.isNext('NEWLINE')) {
+                const next = this.stream.peek()!
+                throw new Error(
+                    `${this.stream.file}:${next.line}:${next.column}:Expected newline between statements, got ${describeToken(next)}`,
+                )
+            }
+
             const after = this.stream.peek()
             if (before && before === after) {
                 throw new Error(
@@ -200,6 +207,16 @@ export class Parser {
             }
 
             statements.push(stmt)
+
+            if (
+                !this.stream.isNext('PUNCTUATION', '}') &&
+                !this.stream.isNext('NEWLINE')
+            ) {
+                const next = this.stream.peek()!
+                throw new Error(
+                    `${this.stream.file}:${next.line}:${next.column}:Expected newline between statements, got ${describeToken(next)}`,
+                )
+            }
         }
 
         this.stream.expect('PUNCTUATION', '}')

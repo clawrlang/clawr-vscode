@@ -113,57 +113,39 @@ export class SemanticAnalyzer {
         // First pass: register all type and function names so forward references work.
         for (const stmt of this.ast.body) {
             if (stmt.kind === 'data-decl') {
-                this.registerDataDeclaration(stmt)
-                const annotated = this.annotateDataDeclaration(stmt)
-                types.push(annotated)
-                typeDeclarations.set(stmt, annotated)
+                this.captureDiagnostic(() => {
+                    this.registerDataDeclaration(stmt)
+                    const annotated = this.annotateDataDeclaration(stmt)
+                    types.push(annotated)
+                    typeDeclarations.set(stmt, annotated)
+                })
             }
             if (stmt.kind === 'func-decl') {
-                this.bindings.set(stmt.name, {
-                    type: 'func',
-                    semantics: 'const',
-                    declarationPosition: stmt.position,
+                this.captureDiagnostic(() => {
+                    this.registerTopLevelFunctionDeclaration(stmt)
                 })
-                const labels = stmt.parameters.map(
-                    (param) => param.label ?? '_',
-                )
-                this.functionSignatures.set(
-                    buildFunctionSignatureKey(stmt.name, labels),
-                    {
-                        name: stmt.name,
-                        visibility: stmt.visibility,
-                        labels,
-                        returnType: stmt.returnType,
-                        returnSemantics: stmt.returnSemantics,
-                        arity: stmt.parameters.length,
-                        parameterTypes: stmt.parameters.map(
-                            (param) => param.type,
-                        ),
-                        parameterSemantics: stmt.parameters.map(
-                            (param) => param.semantics ?? 'const',
-                        ),
-                        effectLevel: 'external',
-                        isInheritanceInitializer: false,
-                    },
-                )
             }
             if (stmt.kind === 'object-decl') {
-                this.registerTypeDeclaration('object', stmt)
-                this.registerMethodSignatures(
-                    'object',
-                    stmt.name,
-                    stmt.sections,
-                )
-                objects.push(stmt)
+                this.captureDiagnostic(() => {
+                    this.registerTypeDeclaration('object', stmt)
+                    this.registerMethodSignatures(
+                        'object',
+                        stmt.name,
+                        stmt.sections,
+                    )
+                    objects.push(stmt)
+                })
             }
             if (stmt.kind === 'service-decl') {
-                this.registerTypeDeclaration('service', stmt)
-                this.registerMethodSignatures(
-                    'service',
-                    stmt.name,
-                    stmt.sections,
-                )
-                services.push(stmt)
+                this.captureDiagnostic(() => {
+                    this.registerTypeDeclaration('service', stmt)
+                    this.registerMethodSignatures(
+                        'service',
+                        stmt.name,
+                        stmt.sections,
+                    )
+                    services.push(stmt)
+                })
             }
         }
 
@@ -1116,6 +1098,37 @@ export class SemanticAnalyzer {
         }
     }
 
+    private registerTopLevelFunctionDeclaration(
+        stmt: ASTFunctionDeclaration,
+    ): void {
+        const labels = stmt.parameters.map((param) => param.label ?? '_')
+        this.assertFunctionSignatureAvailable(stmt.name, labels, stmt.position)
+
+        this.bindings.set(stmt.name, {
+            type: 'func',
+            semantics: 'const',
+            declarationPosition: stmt.position,
+        })
+
+        this.functionSignatures.set(
+            buildFunctionSignatureKey(stmt.name, labels),
+            {
+                name: stmt.name,
+                visibility: stmt.visibility,
+                labels,
+                returnType: stmt.returnType,
+                returnSemantics: stmt.returnSemantics,
+                arity: stmt.parameters.length,
+                parameterTypes: stmt.parameters.map((param) => param.type),
+                parameterSemantics: stmt.parameters.map(
+                    (param) => param.semantics ?? 'const',
+                ),
+                effectLevel: 'external',
+                isInheritanceInitializer: false,
+            },
+        )
+    }
+
     private validateMethodDeclarationRules(
         stmt: ASTFunctionDeclaration,
         isInheritanceInitializer: boolean,
@@ -1222,6 +1235,8 @@ export class SemanticAnalyzer {
         typeKind: 'object' | 'service',
         stmt: ASTObjectDeclaration | ASTServiceDeclaration,
     ) {
+        this.assertTypeNameAvailable(stmt.name, stmt.position)
+
         const dataSection = stmt.sections.find(
             (section): section is Extract<typeof section, { kind: 'data' }> =>
                 section.kind === 'data',
@@ -1417,6 +1432,12 @@ export class SemanticAnalyzer {
                         ? method.parameters.slice(1)
                         : method.parameters
                 const labels = callableParams.map((param) => param.label ?? '_')
+                this.assertFunctionSignatureAvailable(
+                    method.name,
+                    labels,
+                    method.position,
+                    ownerType,
+                )
 
                 this.functionSignatures.set(
                     buildFunctionSignatureKey(method.name, labels, ownerType),
@@ -1592,6 +1613,7 @@ export class SemanticAnalyzer {
     }
 
     private registerDataDeclaration(stmt: ASTDataDeclaration) {
+        this.assertTypeNameAvailable(stmt.name, stmt.position)
         this.typeKinds.set(stmt.name, 'data')
         this.dataTypes.set(
             stmt.name,
@@ -1605,6 +1627,31 @@ export class SemanticAnalyzer {
                     },
                 ]),
             ),
+        )
+    }
+
+    private assertTypeNameAvailable(
+        name: string,
+        position: { file?: string; line: number; column: number },
+    ): void {
+        if (!this.lookupTypeKind(name)) return
+
+        throw new Error(
+            `${posStr(position)}:Type '${name}' is already declared`,
+        )
+    }
+
+    private assertFunctionSignatureAvailable(
+        name: string,
+        labels: string[],
+        position: { file?: string; line: number; column: number },
+        ownerType?: string,
+    ): void {
+        const signatureKey = buildFunctionSignatureKey(name, labels, ownerType)
+        if (!this.lookupFunctionSignature(signatureKey)) return
+
+        throw new Error(
+            `${posStr(position)}:Function '${renderFunctionSignature(name, labels, ownerType)}' is already declared`,
         )
     }
 
