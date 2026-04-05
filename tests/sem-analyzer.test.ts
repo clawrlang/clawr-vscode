@@ -186,6 +186,17 @@ describe('SemanticAnalyzer', () => {
             ])
         })
 
+        it('reports multiple independent top-level semantic errors in source order', () => {
+            try {
+                analyze('const a = nope\nconst b = alsoNope')
+                throw new Error('Expected analyze to throw')
+            } catch (error) {
+                expect((error as Error).message).toBe(
+                    "Error: 1:11:Unknown identifier 'nope'\nError: 2:11:Unknown identifier 'alsoNope'",
+                )
+            }
+        })
+
         it('keeps explicit declaration type when it matches inferred initializer type', () => {
             const module = analyze('const x: truthvalue = ambiguous')
 
@@ -1244,6 +1255,19 @@ describe('Function body analysis', () => {
         expect(() => analyze('func bad() { return nope }')).toThrow(
             "Unknown identifier 'nope'",
         )
+    })
+
+    it('reports multiple statement errors inside one function body in source order', () => {
+        try {
+            analyze(
+                'func bad() {\n    const a = nope\n    const b = alsoNope\n}',
+            )
+            throw new Error('Expected analyze to throw')
+        } catch (error) {
+            expect((error as Error).message).toBe(
+                "Error: 2:15:Unknown identifier 'nope'\nError: 3:15:Unknown identifier 'alsoNope'",
+            )
+        }
     })
 
     it('function names are visible in module scope (forward reference registered)', () => {

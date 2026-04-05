@@ -45,6 +45,15 @@ export type {
     SemanticFunctionSignature,
 } from './ast'
 
+export class CompilerDiagnosticsError extends Error {
+    constructor(readonly diagnostics: string[]) {
+        super(
+            diagnostics.map((diagnostic) => `Error: ${diagnostic}`).join('\n'),
+        )
+        this.name = 'CompilerDiagnosticsError'
+    }
+}
+
 export class SemanticAnalyzer {
     private bindings: BindingMap = new Map()
     private dataTypes: Map<string, BindingMap>
@@ -52,6 +61,7 @@ export class SemanticAnalyzer {
     private typeKinds: Map<string, TypeKind>
     private objectSupertypes: Map<string, string>
     private inheritableObjects: Set<string>
+    private diagnostics: string[]
 
     constructor(
         private ast: ASTProgram,
@@ -69,6 +79,7 @@ export class SemanticAnalyzer {
         private currentInheritanceInitializer = false,
         private currentInheritanceSelfInitialized = true,
         private currentFunctionEffectLevel: EffectLevel | null = null,
+        diagnostics?: string[],
     ) {
         this.dataTypes = dataTypes ?? parent?.dataTypes ?? new Map()
         this.functionSignatures =
@@ -78,10 +89,15 @@ export class SemanticAnalyzer {
             objectSupertypes ?? parent?.objectSupertypes ?? new Map()
         this.inheritableObjects =
             inheritableObjects ?? parent?.inheritableObjects ?? new Set()
+        this.diagnostics = diagnostics ?? parent?.diagnostics ?? []
     }
 
     analyze(): SemanticModule {
         const types: SemanticDataDeclaration[] = []
+        const typeDeclarations = new Map<
+            ASTDataDeclaration,
+            SemanticDataDeclaration
+        >()
         const objects: ASTObjectDeclaration[] = []
         const services: ASTServiceDeclaration[] = []
         const mainBody: SemanticStatement[] = []
@@ -92,7 +108,9 @@ export class SemanticAnalyzer {
         for (const stmt of this.ast.body) {
             if (stmt.kind === 'data-decl') {
                 this.registerDataDeclaration(stmt)
-                types.push(this.annotateDataDeclaration(stmt))
+                const annotated = this.annotateDataDeclaration(stmt)
+                types.push(annotated)
+                typeDeclarations.set(stmt, annotated)
             }
             if (stmt.kind === 'func-decl') {
                 this.bindings.set(stmt.name, {
@@ -143,15 +161,42 @@ export class SemanticAnalyzer {
             }
         }
 
-        this.validateDataFieldSemantics(types)
-        this.validateTypeFieldSemantics(objects, services)
-        this.validateObjectHierarchies(objects)
+        for (const stmt of this.ast.body) {
+            if (stmt.kind === 'data-decl') {
+                const decl = typeDeclarations.get(stmt)
+                if (decl) {
+                    this.captureDiagnostic(() =>
+                        this.validateDataFieldSemantics([decl]),
+                    )
+                }
+                continue
+            }
+
+            if (stmt.kind === 'object-decl') {
+                this.captureDiagnostic(() =>
+                    this.validateTypeFieldSemantics([stmt], []),
+                )
+                this.captureDiagnostic(() =>
+                    this.validateObjectHierarchies([stmt]),
+                )
+                continue
+            }
+
+            if (stmt.kind === 'service-decl') {
+                this.captureDiagnostic(() =>
+                    this.validateTypeFieldSemantics([], [stmt]),
+                )
+            }
+        }
 
         // Second pass: analyze function bodies and module-level statements.
         const mainScopedAnalyzer = this.createChildScope()
         for (const stmt of this.ast.body) {
             if (stmt.kind === 'func-decl') {
-                const analyzed = this.analyzeFunctionDeclaration(stmt)
+                const analyzed = this.captureDiagnostic(() =>
+                    this.analyzeFunctionDeclaration(stmt),
+                )
+                if (!analyzed) continue
                 const labels = stmt.parameters.map(
                     (param) => param.label ?? '_',
                 )
@@ -162,27 +207,32 @@ export class SemanticAnalyzer {
                 continue
             }
             if (stmt.kind === 'object-decl') {
-                typeMethods.push(
-                    ...this.analyzeTypeMethods(
-                        stmt.name,
-                        'object',
-                        stmt.sections,
-                    ),
+                const analyzedMethods = this.captureDiagnostic(() =>
+                    this.analyzeTypeMethods(stmt.name, 'object', stmt.sections),
                 )
+                if (analyzedMethods) typeMethods.push(...analyzedMethods)
                 continue
             }
             if (stmt.kind === 'service-decl') {
-                typeMethods.push(
-                    ...this.analyzeTypeMethods(
+                const analyzedMethods = this.captureDiagnostic(() =>
+                    this.analyzeTypeMethods(
                         stmt.name,
                         'service',
                         stmt.sections,
                     ),
                 )
+                if (analyzedMethods) typeMethods.push(...analyzedMethods)
                 continue
             }
             if (stmt.kind === 'data-decl') continue
-            mainBody.push(mainScopedAnalyzer.analyzeStatement(stmt))
+            const analyzedStatement = this.captureDiagnostic(() =>
+                mainScopedAnalyzer.analyzeStatement(stmt),
+            )
+            if (analyzedStatement) mainBody.push(analyzedStatement)
+        }
+
+        if (this.diagnostics.length > 0) {
+            throw new CompilerDiagnosticsError([...this.diagnostics])
         }
 
         const mainFunction: SemanticFunction = {
@@ -224,6 +274,7 @@ export class SemanticAnalyzer {
             this.currentInheritanceInitializer,
             this.currentInheritanceSelfInitialized,
             this.currentFunctionEffectLevel,
+            this.diagnostics,
         )
     }
 
@@ -244,6 +295,7 @@ export class SemanticAnalyzer {
             this.currentInheritanceInitializer,
             this.currentInheritanceSelfInitialized,
             this.currentFunctionEffectLevel,
+            this.diagnostics,
         )
     }
 
@@ -273,7 +325,31 @@ export class SemanticAnalyzer {
             inheritanceInitializer,
             inheritanceSelfInitialized,
             inferEffect,
+            this.diagnostics,
         )
+    }
+
+    private captureDiagnostic<T>(callback: () => T): T | undefined {
+        try {
+            return callback()
+        } catch (error) {
+            this.recordDiagnostic(error)
+            return undefined
+        }
+    }
+
+    private recordDiagnostic(error: unknown): void {
+        if (error instanceof CompilerDiagnosticsError) {
+            this.diagnostics.push(...error.diagnostics)
+            return
+        }
+
+        if (error instanceof Error) {
+            this.diagnostics.push(error.message)
+            return
+        }
+
+        this.diagnostics.push(String(error))
     }
 
     private analyzeStatement(stmt: ASTStatement): SemanticStatement {
@@ -379,17 +455,26 @@ export class SemanticAnalyzer {
         this.assertTruthvalueCondition(stmt.condition, stmt.position, 'if')
 
         const thenAnalyzer = this.createChildScope()
-        const thenBranch = stmt.thenBranch.map((child) =>
-            thenAnalyzer.analyzeStatement(child),
-        )
+        const thenBranch: SemanticStatement[] = []
+        for (const child of stmt.thenBranch) {
+            const analyzed = thenAnalyzer.captureDiagnostic(() =>
+                thenAnalyzer.analyzeStatement(child),
+            )
+            if (analyzed) thenBranch.push(analyzed)
+        }
 
         let elseAnalyzer: SemanticAnalyzer | undefined
         const elseBranch = stmt.elseBranch
             ? (() => {
                   elseAnalyzer = this.createChildScope()
-                  return stmt.elseBranch.map((child) =>
-                      elseAnalyzer!.analyzeStatement(child),
-                  )
+                  const analyzedElseBranch: SemanticStatement[] = []
+                  for (const child of stmt.elseBranch) {
+                      const analyzed = elseAnalyzer!.captureDiagnostic(() =>
+                          elseAnalyzer!.analyzeStatement(child),
+                      )
+                      if (analyzed) analyzedElseBranch.push(analyzed)
+                  }
+                  return analyzedElseBranch
               })()
             : undefined
 
@@ -428,9 +513,13 @@ export class SemanticAnalyzer {
         this.assertTruthvalueCondition(stmt.condition, stmt.position, 'while')
 
         const loopAnalyzer = this.createLoopChildScope()
-        const body = stmt.body.map((child) =>
-            loopAnalyzer.analyzeStatement(child),
-        )
+        const body: SemanticStatement[] = []
+        for (const child of stmt.body) {
+            const analyzed = loopAnalyzer.captureDiagnostic(() =>
+                loopAnalyzer.analyzeStatement(child),
+            )
+            if (analyzed) body.push(analyzed)
+        }
 
         return {
             kind: 'while',
@@ -473,9 +562,13 @@ export class SemanticAnalyzer {
             stmt.position,
         )
 
-        const body = stmt.body.map((child) =>
-            loopAnalyzer.analyzeStatement(child),
-        )
+        const body: SemanticStatement[] = []
+        for (const child of stmt.body) {
+            const analyzed = loopAnalyzer.captureDiagnostic(() =>
+                loopAnalyzer.analyzeStatement(child),
+            )
+            if (analyzed) body.push(analyzed)
+        }
 
         return {
             kind: 'for-in',
@@ -1072,9 +1165,14 @@ export class SemanticAnalyzer {
         bodyAnalyzer: SemanticAnalyzer,
     ): SemanticStatement[] {
         if (stmt.body.kind === 'block') {
-            return stmt.body.statements.map((s) =>
-                bodyAnalyzer.analyzeStatement(s),
-            )
+            const body: SemanticStatement[] = []
+            for (const statement of stmt.body.statements) {
+                const analyzed = bodyAnalyzer.captureDiagnostic(() =>
+                    bodyAnalyzer.analyzeStatement(statement),
+                )
+                if (analyzed) body.push(analyzed)
+            }
+            return body
         }
 
         if (bodyAnalyzer.currentInheritanceInitializer) {

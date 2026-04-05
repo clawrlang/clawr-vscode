@@ -14,7 +14,7 @@ import type {
     ASTStatement,
     ASTVariableDeclaration,
 } from './ast'
-import { SemanticAnalyzer } from './semantic-analyzer'
+import { SemanticAnalyzer, CompilerDiagnosticsError } from './semantic-analyzer'
 import { resolveImportPath } from './semantic-analyzer/module-graph'
 import { collectTopLevelBoundIdentifierPositions } from './references/top-level-bound-positions'
 import {
@@ -598,7 +598,16 @@ function registerDiagnostics(profiler: DiagnosticsProfiler): vscode.Disposable {
                     reason: 'completed',
                 })
             } catch (error) {
-                diagnostics.set(document.uri, [toDiagnostic(error, document)])
+                if (error instanceof CompilerDiagnosticsError) {
+                    diagnostics.set(
+                        document.uri,
+                        error.diagnostics.map((d) => toDiagnostic(d, document)),
+                    )
+                } else {
+                    diagnostics.set(document.uri, [
+                        toDiagnostic(error, document),
+                    ])
+                }
                 profiler.record({
                     fileName: document.fileName,
                     durationMs: Date.now() - startMs,
