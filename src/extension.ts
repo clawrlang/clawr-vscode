@@ -14,6 +14,7 @@ import type {
     ASTStatement,
     ASTVariableDeclaration,
 } from './ast'
+import { SemanticAnalyzer } from './semantic-analyzer'
 import { resolveImportPath } from './semantic-analyzer/module-graph'
 import { collectTopLevelBoundIdentifierPositions } from './references/top-level-bound-positions'
 import {
@@ -586,7 +587,8 @@ function registerDiagnostics(profiler: DiagnosticsProfiler): vscode.Disposable {
                 const parser = new Parser(
                     new TokenStream(source, document.uri.fsPath),
                 )
-                parser.parse()
+                const ast = parser.parse()
+                new SemanticAnalyzer(ast).analyze()
                 diagnostics.delete(document.uri)
                 profiler.record({
                     fileName: document.fileName,
