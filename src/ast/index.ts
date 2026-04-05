@@ -66,6 +66,7 @@ export interface ASTIdentifier {
 export interface ASTDataLiteral {
     kind: 'data-literal'
     fields: { [field: string]: ASTExpression }
+    superInitializer?: ASTCallExpression
     position: ASTPosition
 }
 

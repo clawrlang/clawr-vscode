@@ -154,6 +154,57 @@ describe('Parser Tests', () => {
         })
     })
 
+    it('parses data literal with leading super initializer call', () => {
+        const program = 'const p: Sub = { super.new(seed: 42), child: true }'
+        const ast = parse(program)
+        expect(ast).toMatchObject({
+            body: [
+                {
+                    kind: 'var-decl',
+                    value: {
+                        kind: 'data-literal',
+                        superInitializer: {
+                            kind: 'call',
+                            callee: {
+                                kind: 'binary',
+                                operator: '.',
+                                left: {
+                                    kind: 'identifier',
+                                    name: 'super',
+                                },
+                                right: {
+                                    kind: 'identifier',
+                                    name: 'new',
+                                },
+                            },
+                            arguments: [
+                                {
+                                    label: 'seed',
+                                    value: {
+                                        kind: 'integer',
+                                        value: 42n,
+                                    },
+                                },
+                            ],
+                        },
+                        fields: {
+                            child: {
+                                kind: 'truthvalue',
+                                value: 'true',
+                            },
+                        },
+                    },
+                },
+            ],
+        })
+    })
+
+    it('rejects super initializer when it is not the first literal entry', () => {
+        expect(() =>
+            parse('const p: Sub = { child: true, super.new(seed: 42) }'),
+        ).toThrow()
+    })
+
     it('parses explicit copy expression', () => {
         const ast = parse('mut x: Box = copy(shared)')
         expect(ast).toMatchObject({

@@ -1,4 +1,9 @@
-import { ASTBinaryExpression, ASTCallArgument, ASTExpression } from '../ast'
+import {
+    ASTBinaryExpression,
+    ASTCallArgument,
+    ASTCallExpression,
+    ASTExpression,
+} from '../ast'
 import { TokenStream } from '../lexer'
 
 export class ExpressionParser {
@@ -287,7 +292,42 @@ export class ExpressionParser {
                 if (token.symbol === '{') {
                     this.stream.next()
                     const fields: { [field: string]: ASTExpression } = {}
+                    let superInitializer: ASTCallExpression | undefined
+
                     while (!this.stream.isNext('PUNCTUATION', '}')) {
+                        if (
+                            !superInitializer &&
+                            Object.keys(fields).length === 0 &&
+                            this.stream.isNext('KEYWORD', 'super')
+                        ) {
+                            const maybeSuperInitializer = this.parse()
+                            if (
+                                !this.isSuperInitializerCall(
+                                    maybeSuperInitializer,
+                                )
+                            ) {
+                                throw new Error(
+                                    `${maybeSuperInitializer.position.line}:${maybeSuperInitializer.position.column}:Expected super initializer call 'super.name(...)' as the first literal entry`,
+                                )
+                            }
+
+                            superInitializer = maybeSuperInitializer
+                            if (this.stream.isNext('PUNCTUATION', ',')) {
+                                this.stream.next()
+                            }
+                            if (this.stream.isNext('NEWLINE')) {
+                                this.stream.next({ stopAtNewline: true })
+                            }
+                            continue
+                        }
+
+                        if (this.stream.isNext('KEYWORD', 'super')) {
+                            const token = this.stream.peek()
+                            throw new Error(
+                                `${token?.line ?? '?'}:${token?.column ?? '?'}:super initializer call must be the first literal entry`,
+                            )
+                        }
+
                         const fieldName =
                             this.stream.expect('IDENTIFIER').identifier
                         this.stream.expect('PUNCTUATION', ':')
@@ -304,6 +344,7 @@ export class ExpressionParser {
                     return {
                         kind: 'data-literal',
                         fields,
+                        superInitializer,
                         position: { line: token.line, column: token.column },
                     }
                 } else {
@@ -371,5 +412,18 @@ export class ExpressionParser {
             branches,
             position: { line: whenToken.line, column: whenToken.column },
         }
+    }
+
+    private isSuperInitializerCall(
+        value: ASTExpression,
+    ): value is ASTCallExpression {
+        return (
+            value.kind === 'call' &&
+            value.callee.kind === 'binary' &&
+            value.callee.operator === '.' &&
+            value.callee.left.kind === 'identifier' &&
+            value.callee.left.name === 'super' &&
+            value.callee.right.kind === 'identifier'
+        )
     }
 }

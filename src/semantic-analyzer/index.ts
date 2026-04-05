@@ -66,6 +66,8 @@ export class SemanticAnalyzer {
         private currentOwnerType?: string,
         private currentOwnerKind?: 'object' | 'service',
         private currentMethodMutating = false,
+        private currentInheritanceInitializer = false,
+        private currentInheritanceSelfInitialized = true,
         private currentFunctionEffectLevel: EffectLevel | null = null,
     ) {
         this.dataTypes = dataTypes ?? parent?.dataTypes ?? new Map()
@@ -117,6 +119,7 @@ export class SemanticAnalyzer {
                             (param) => param.semantics ?? 'const',
                         ),
                         effectLevel: 'external',
+                        isInheritanceInitializer: false,
                     },
                 )
             }
@@ -218,6 +221,8 @@ export class SemanticAnalyzer {
             this.currentOwnerType,
             this.currentOwnerKind,
             this.currentMethodMutating,
+            this.currentInheritanceInitializer,
+            this.currentInheritanceSelfInitialized,
             this.currentFunctionEffectLevel,
         )
     }
@@ -236,6 +241,8 @@ export class SemanticAnalyzer {
             this.currentOwnerType,
             this.currentOwnerKind,
             this.currentMethodMutating,
+            this.currentInheritanceInitializer,
+            this.currentInheritanceSelfInitialized,
             this.currentFunctionEffectLevel,
         )
     }
@@ -245,9 +252,11 @@ export class SemanticAnalyzer {
         ownerType?: string,
         ownerKind?: 'object' | 'service',
         methodMutating = false,
+        inheritanceInitializer = false,
     ): SemanticAnalyzer {
         // For free functions, infer effect level; for methods, we already know it
         const inferEffect = ownerType ? null : ('pure' as EffectLevel)
+        const inheritanceSelfInitialized = !inheritanceInitializer
         return new SemanticAnalyzer(
             this.ast,
             this,
@@ -261,6 +270,8 @@ export class SemanticAnalyzer {
             ownerType,
             ownerKind,
             methodMutating,
+            inheritanceInitializer,
+            inheritanceSelfInitialized,
             inferEffect,
         )
     }
@@ -307,6 +318,12 @@ export class SemanticAnalyzer {
     private analyzeReturnStatement(
         stmt: ASTReturnStatement,
     ): SemanticReturnStatement {
+        if (this.currentInheritanceInitializer && stmt.value !== undefined) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Inheritance initializer methods do not return values; assign to 'self' instead`,
+            )
+        }
+
         if (stmt.value === undefined) {
             if (this.currentFunctionReturnType !== undefined) {
                 throw new Error(
@@ -353,14 +370,21 @@ export class SemanticAnalyzer {
             thenAnalyzer.analyzeStatement(child),
         )
 
+        let elseAnalyzer: SemanticAnalyzer | undefined
         const elseBranch = stmt.elseBranch
             ? (() => {
-                  const elseAnalyzer = this.createChildScope()
+                  elseAnalyzer = this.createChildScope()
                   return stmt.elseBranch.map((child) =>
-                      elseAnalyzer.analyzeStatement(child),
+                      elseAnalyzer!.analyzeStatement(child),
                   )
               })()
             : undefined
+
+        this.mergeInheritanceInitializationAfterIf(
+            thenAnalyzer,
+            elseAnalyzer,
+            Boolean(elseBranch),
+        )
 
         return {
             kind: 'if',
@@ -369,6 +393,20 @@ export class SemanticAnalyzer {
             elseBranch,
             position: stmt.position,
         }
+    }
+
+    private mergeInheritanceInitializationAfterIf(
+        thenAnalyzer: SemanticAnalyzer,
+        elseAnalyzer: SemanticAnalyzer | undefined,
+        hasElseBranch: boolean,
+    ): void {
+        if (!this.currentInheritanceInitializer) return
+        if (this.currentInheritanceSelfInitialized) return
+
+        this.currentInheritanceSelfInitialized =
+            hasElseBranch &&
+            thenAnalyzer.currentInheritanceSelfInitialized &&
+            Boolean(elseAnalyzer?.currentInheritanceSelfInitialized)
     }
 
     private analyzeWhileStatement(
@@ -509,11 +547,29 @@ export class SemanticAnalyzer {
         }
 
         this.validateMethodAssignmentRules(stmt.target, stmt.position)
-
         this.validateAssignmentMutationSemantics(stmt.target)
 
-        const targetType = this.inferExpressionType(stmt.target)
-        const valueType = this.inferExpressionType(stmt.value)
+        const isSelfInitializationAssignment =
+            this.isInheritanceSelfInitializationAssignment(stmt)
+
+        if (
+            this.currentInheritanceInitializer &&
+            stmt.target.kind === 'identifier' &&
+            stmt.target.name === 'self' &&
+            stmt.value.kind !== 'data-literal'
+        ) {
+            throw new Error(
+                `${stmt.position.line}:${stmt.position.column}:Inheritance initializer must initialize 'self' with a data literal before using it`,
+            )
+        }
+
+        const targetType = isSelfInitializationAssignment
+            ? (this.lookupBinding('self')?.type ?? null)
+            : this.inferExpressionType(stmt.target)
+        const valueType =
+            stmt.value.kind === 'data-literal'
+                ? targetType
+                : this.inferExpressionType(stmt.value)
         const targetSemantics = this.inferExpressionSemantics(stmt.target)
         const valueSemantics = this.inferExpressionSemantics(stmt.value)
 
@@ -527,6 +583,10 @@ export class SemanticAnalyzer {
             throw new Error(
                 `${stmt.position.line}:${stmt.position.column}:Cannot infer type for assignment value '${stmt.value.kind}'`,
             )
+        }
+
+        if (stmt.value.kind === 'data-literal') {
+            this.validateDataLiteral(stmt.value, targetType)
         }
 
         if (!this.isTypeAssignable(valueType, targetType)) {
@@ -545,6 +605,10 @@ export class SemanticAnalyzer {
             rewrittenValue,
             stmt.position,
         )
+
+        if (isSelfInitializationAssignment) {
+            this.currentInheritanceSelfInitialized = true
+        }
 
         return {
             kind: 'assign',
@@ -585,6 +649,10 @@ export class SemanticAnalyzer {
         }
 
         if (target.kind === 'identifier' && this.isReferenceType(targetType)) {
+            if (value.kind === 'data-literal') {
+                return {}
+            }
+
             if (this.isCopyExpression(value)) {
                 return {
                     releases: [target],
@@ -607,6 +675,27 @@ export class SemanticAnalyzer {
             target.kind === 'identifier' ||
             (target.kind === 'binary' &&
                 (target.operator === '.' || target.operator === '[]'))
+        )
+    }
+
+    private isInheritanceSelfInitializationAssignment(
+        stmt: ASTAssignment,
+    ): boolean {
+        return (
+            this.currentInheritanceInitializer &&
+            stmt.target.kind === 'identifier' &&
+            stmt.target.name === 'self' &&
+            stmt.value.kind === 'data-literal'
+        )
+    }
+
+    private assertSelfReadable(identifier: ASTIdentifier): void {
+        if (!this.currentInheritanceInitializer) return
+        if (this.currentInheritanceSelfInitialized) return
+        if (identifier.name !== 'self') return
+
+        throw new Error(
+            `${identifier.position.line}:${identifier.position.column}:Cannot use 'self' before it is initialized; assign to 'self' with a data literal first`,
         )
     }
 
@@ -855,15 +944,22 @@ export class SemanticAnalyzer {
     private analyzeFunctionDeclaration(
         stmt: ASTFunctionDeclaration,
     ): SemanticFunction {
+        const isInheritanceInitializer =
+            this.isInheritanceInitializerFunction(stmt)
         this.validateSelfParameterRestrictions(stmt)
-        this.validateMethodDeclarationRules(stmt)
+        this.validateMethodDeclarationRules(stmt, isInheritanceInitializer)
         this.validateServiceFunctionRestrictions(stmt)
+        this.validateInheritanceInitializerDeclarationRules(
+            stmt,
+            isInheritanceInitializer,
+        )
 
         const bodyAnalyzer = this.createFunctionChildScope(
             stmt.returnType,
             this.currentOwnerType,
             this.currentOwnerKind,
             this.currentMethodMutating,
+            isInheritanceInitializer,
         )
 
         // Inject parameters as bindings in the function scope.
@@ -908,14 +1004,41 @@ export class SemanticAnalyzer {
         }
     }
 
-    private validateMethodDeclarationRules(stmt: ASTFunctionDeclaration): void {
+    private validateMethodDeclarationRules(
+        stmt: ASTFunctionDeclaration,
+        isInheritanceInitializer: boolean,
+    ): void {
         if (!this.currentOwnerType) return
+        if (isInheritanceInitializer) return
         if (this.currentMethodMutating) return
         if (stmt.returnType !== undefined) return
 
         throw new Error(
             `${stmt.position.line}:${stmt.position.column}:Immutable method '${this.currentOwnerType}.${stmt.name}' must declare a return type`,
         )
+    }
+
+    private validateInheritanceInitializerDeclarationRules(
+        stmt: ASTFunctionDeclaration,
+        isInheritanceInitializer: boolean,
+    ): void {
+        if (!isInheritanceInitializer) return
+        if (stmt.returnType === undefined) return
+
+        throw new Error(
+            `${stmt.position.line}:${stmt.position.column}:Inheritance initializer '${this.currentOwnerType}.${stmt.name}' must not declare a return type`,
+        )
+    }
+
+    private isInheritanceInitializerFunction(
+        stmt: ASTFunctionDeclaration,
+    ): boolean {
+        if (!this.currentOwnerType) return false
+        const labels = stmt.parameters.map((param) => param.label ?? '_')
+        const signature = this.lookupFunctionSignature(
+            buildFunctionSignatureKey(stmt.name, labels, this.currentOwnerType),
+        )
+        return signature?.isInheritanceInitializer ?? false
     }
 
     private validateSelfParameterRestrictions(
@@ -939,6 +1062,27 @@ export class SemanticAnalyzer {
             return stmt.body.statements.map((s) =>
                 bodyAnalyzer.analyzeStatement(s),
             )
+        }
+
+        if (bodyAnalyzer.currentInheritanceInitializer) {
+            if (stmt.body.value.kind !== 'data-literal') {
+                throw new Error(
+                    `${stmt.position.line}:${stmt.position.column}:Inheritance initializer shorthand body must be a data literal assigned to self`,
+                )
+            }
+
+            return [
+                bodyAnalyzer.analyzeAssignment({
+                    kind: 'assign',
+                    target: {
+                        kind: 'identifier',
+                        name: 'self',
+                        position: stmt.body.value.position,
+                    },
+                    value: stmt.body.value,
+                    position: stmt.body.value.position,
+                }),
+            ]
         }
 
         // Shorthand `=> expr` body: treat as a single implicit return.
@@ -1176,6 +1320,8 @@ export class SemanticAnalyzer {
                             ownerKind,
                             section.kind,
                         ),
+                        isInheritanceInitializer:
+                            section.kind === 'inheritance',
                     },
                 )
             }
@@ -1202,7 +1348,8 @@ export class SemanticAnalyzer {
                     method.returnType,
                     ownerType,
                     ownerKind,
-                    section.kind === 'mutating',
+                    section.kind !== 'methods',
+                    section.kind === 'inheritance',
                 )
                 const analyzed =
                     methodAnalyzer.analyzeFunctionDeclaration(method)
@@ -1210,9 +1357,9 @@ export class SemanticAnalyzer {
                     name: 'self',
                     type: ownerType,
                     semantics:
-                        section.kind === 'mutating'
-                            ? ('ref' as const)
-                            : ('const' as const),
+                        section.kind === 'methods'
+                            ? ('const' as const)
+                            : ('ref' as const),
                     position: method.position,
                 }
                 const callableParams =
@@ -1287,7 +1434,7 @@ export class SemanticAnalyzer {
         sectionKind: 'methods' | 'mutating' | 'inheritance',
     ): EffectLevel {
         if (ownerKind === 'service') return 'external'
-        return sectionKind === 'mutating' ? 'self-mutation' : 'pure'
+        return sectionKind === 'methods' ? 'pure' : 'self-mutation'
     }
 
     private buildCallDispatch(
@@ -1646,7 +1793,16 @@ export class SemanticAnalyzer {
         const expectedFields = this.lookupAllTypeFields(expectedType)
         if (!expectedFields) return
 
-        for (const [fieldName, fieldInfo] of expectedFields.entries()) {
+        if (value.superInitializer) {
+            this.validateDataLiteralSuperInitializer(value, expectedType)
+        }
+
+        const directFields = this.lookupDataType(expectedType)
+        const requiredFields = value.superInitializer
+            ? (directFields ?? new Map<string, VariableBinding>())
+            : expectedFields
+
+        for (const [fieldName, fieldInfo] of requiredFields.entries()) {
             if (!(fieldName in value.fields)) {
                 const position = fieldInfo.declarationPosition ?? value.position
                 throw new Error(
@@ -1656,7 +1812,7 @@ export class SemanticAnalyzer {
         }
 
         for (const [fieldName, fieldValue] of Object.entries(value.fields)) {
-            const expectedFieldInfo = expectedFields.get(fieldName)
+            const expectedFieldInfo = requiredFields.get(fieldName)
             if (!expectedFieldInfo) {
                 throw new Error(
                     `${fieldValue.position.line}:${fieldValue.position.column}:Unknown field '${fieldName}' for data type '${expectedType}'`,
@@ -1673,6 +1829,66 @@ export class SemanticAnalyzer {
             ) {
                 throw new Error(
                     `${fieldValue.position.line}:${fieldValue.position.column}:Type mismatch for field '${fieldName}': expected '${expectedFieldInfo.type}' but got '${inferredFieldType ?? fieldValue.kind}'`,
+                )
+            }
+        }
+    }
+
+    private validateDataLiteralSuperInitializer(
+        value: ASTDataLiteral,
+        expectedType: string,
+    ): void {
+        const superInitializer = value.superInitializer
+        if (!superInitializer) return
+
+        const declaredSupertype = this.lookupObjectSupertype(expectedType)
+        if (!declaredSupertype) {
+            throw new Error(
+                `${superInitializer.position.line}:${superInitializer.position.column}:Type '${expectedType}' has no direct supertype for a super initializer call`,
+            )
+        }
+
+        const callee = superInitializer.callee
+        if (
+            callee.kind !== 'binary' ||
+            callee.operator !== '.' ||
+            callee.left.kind !== 'identifier' ||
+            callee.left.name !== 'super' ||
+            callee.right.kind !== 'identifier'
+        ) {
+            throw new Error(
+                `${superInitializer.position.line}:${superInitializer.position.column}:Super initializer must be a direct call in the form super.name(...)`,
+            )
+        }
+
+        const argumentLabels = superInitializer.arguments.map(
+            (arg) => arg.label ?? '_',
+        )
+        const signature = this.lookupFunctionSignature(
+            buildFunctionSignatureKey(
+                callee.right.name,
+                argumentLabels,
+                declaredSupertype,
+            ),
+        )
+
+        if (!signature || !signature.isInheritanceInitializer) {
+            throw new Error(
+                `${superInitializer.position.line}:${superInitializer.position.column}:No inheritance initializer '${declaredSupertype}.${callee.right.name}' matches this call`,
+            )
+        }
+
+        for (let i = 0; i < superInitializer.arguments.length; i++) {
+            const argument = superInitializer.arguments[i]
+            const expectedType = signature.parameterTypes[i]
+            const actualType = this.inferExpressionType(argument.value)
+            if (
+                expectedType &&
+                actualType &&
+                !this.isTypeAssignable(actualType, expectedType)
+            ) {
+                throw new Error(
+                    `${argument.value.position.line}:${argument.value.position.column}:Argument ${i + 1} type mismatch for super initializer '${declaredSupertype}.${callee.right.name}': expected '${expectedType}' but got '${actualType}'`,
                 )
             }
         }
@@ -1708,7 +1924,10 @@ export class SemanticAnalyzer {
         }
     }
 
-    private inferExpressionType(value: ASTExpression): string | null {
+    private inferExpressionType(
+        value: ASTExpression,
+        options?: { allowInheritanceInitializerCall?: boolean },
+    ): string | null {
         switch (value.kind) {
             case 'truthvalue':
                 return 'truthvalue'
@@ -1907,6 +2126,15 @@ export class SemanticAnalyzer {
                     )
                 }
 
+                if (
+                    signature.isInheritanceInitializer &&
+                    !options?.allowInheritanceInitializerCall
+                ) {
+                    throw new Error(
+                        `${value.position.line}:${value.position.column}:Inheritance initializer '${renderFunctionSignature(calleeName, argumentLabels, signature.ownerType)}' cannot be called directly; use it as the first entry in a subtype object literal`,
+                    )
+                }
+
                 this.validateCallEffects(signature, value.position, {
                     name: calleeName,
                     labels: argumentLabels,
@@ -1957,6 +2185,8 @@ export class SemanticAnalyzer {
                 return signature.returnType
             }
             case 'identifier': {
+                this.assertSelfReadable(value)
+
                 const binding = this.lookupBinding(value.name)
                 if (!binding) {
                     throw new Error(
@@ -2491,6 +2721,7 @@ type FunctionSignature = {
     parameterTypes: string[]
     parameterSemantics: Array<'const' | 'mut' | 'ref'>
     effectLevel: EffectLevel
+    isInheritanceInitializer: boolean
 }
 
 function effectRank(level: EffectLevel): number {

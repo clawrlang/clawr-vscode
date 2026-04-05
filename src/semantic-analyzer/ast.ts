@@ -231,6 +231,7 @@ export interface SemanticFunctionSignature {
     parameterTypes: string[]
     parameterSemantics: Array<'const' | 'mut' | 'ref'>
     effectLevel: 'pure' | 'self-mutation' | 'external'
+    isInheritanceInitializer: boolean
 }
 
 export interface SemanticModule {
