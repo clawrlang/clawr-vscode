@@ -678,7 +678,7 @@ describe('Function declaration tests', () => {
     })
 
     it('parses a function with unlabeled parameters', () => {
-        const ast = parse('func add(a: integer, b: integer) -> integer { }')
+        const ast = parse('func add(_ a: integer, _ b: integer) -> integer { }')
         expect(ast.body[0]).toMatchObject({
             kind: 'func-decl',
             name: 'add',
@@ -698,6 +698,15 @@ describe('Function declaration tests', () => {
         })
     })
 
+    it('parses a function where single identifier parameter is both label and name', () => {
+        const ast = parse('func negate(value: truthvalue) -> truthvalue { }')
+        expect(ast.body[0]).toMatchObject({
+            kind: 'func-decl',
+            name: 'negate',
+            parameters: [{ label: 'value', name: 'value', type: 'truthvalue' }],
+        })
+    })
+
     it('parses a function with parameter semantics prefixes', () => {
         const ast = parse(
             'func update(target: ref Point, value: truthvalue) { }',
@@ -705,8 +714,18 @@ describe('Function declaration tests', () => {
         expect(ast.body[0]).toMatchObject({
             kind: 'func-decl',
             parameters: [
-                { semantics: 'ref', name: 'target', type: 'Point' },
-                { semantics: undefined, name: 'value', type: 'truthvalue' },
+                {
+                    label: 'target',
+                    semantics: 'ref',
+                    name: 'target',
+                    type: 'Point',
+                },
+                {
+                    label: 'value',
+                    semantics: undefined,
+                    name: 'value',
+                    type: 'truthvalue',
+                },
             ],
         })
     })
@@ -715,7 +734,7 @@ describe('Function declaration tests', () => {
         const ast = parse('func consume(tokens: [Token]) { }')
         expect(ast.body[0]).toMatchObject({
             kind: 'func-decl',
-            parameters: [{ name: 'tokens', type: '[Token]' }],
+            parameters: [{ label: 'tokens', name: 'tokens', type: '[Token]' }],
         })
     })
 

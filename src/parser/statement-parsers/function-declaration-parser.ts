@@ -99,7 +99,10 @@ export class FunctionDeclarationParser {
                 this.stream.expect('PUNCTUATION', ',')
             }
 
-            // Either `label name: [semantics] Type` or `name: [semantics] Type`
+            // Swift-like parameter labels:
+            // - `name: Type` => label=name, internal name=name
+            // - `label name: Type` => explicit external/internal names
+            // - `_ name: Type` => unlabeled external name
             const firstToken = this.parseParameterNameToken()
             let label: string | undefined
             let paramName: string
@@ -108,9 +111,21 @@ export class FunctionDeclarationParser {
                 this.stream.isNext('IDENTIFIER') ||
                 this.stream.isNext('KEYWORD', 'self')
             ) {
-                label = firstToken.identifier
-                paramName = this.parseParameterNameToken().identifier
+                const secondToken = this.parseParameterNameToken()
+                label =
+                    firstToken.identifier === '_'
+                        ? undefined
+                        : firstToken.identifier
+                paramName = secondToken.identifier
             } else {
+                if (firstToken.identifier === '_') {
+                    throw new Error(
+                        `${this.stream.file}:${firstToken.line}:${firstToken.column}:Parameter '_' requires an internal name (use '_ name: Type')`,
+                    )
+                }
+
+                // Single identifier acts as both external label and internal name.
+                label = firstToken.identifier
                 paramName = firstToken.identifier
             }
 

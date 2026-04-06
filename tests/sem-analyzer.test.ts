@@ -173,7 +173,7 @@ describe('SemanticAnalyzer', () => {
         it('rejects data-literal arguments in function calls', () => {
             expect(() =>
                 analyze(
-                    'data Point { x: truthvalue }\nfunc take(p: Point) -> truthvalue { return true }\nconst result: truthvalue = take({ x: true })',
+                    'data Point { x: truthvalue }\nfunc take(_ p: Point) -> truthvalue { return true }\nconst result: truthvalue = take({ x: true })',
                 ),
             ).toThrow(
                 'Data literal arguments are not supported in function calls',
@@ -263,6 +263,19 @@ describe('SemanticAnalyzer', () => {
             expect(() => analyze('const y = x')).toThrow(
                 "test.clawr:1:11:Unknown identifier 'x'",
             )
+        })
+
+        it('does not report declared variable as unknown after explicit initializer failure', () => {
+            try {
+                analyze(
+                    'const aValue: integer = missingFunction(42)\nprint aValue',
+                )
+                throw new Error('Expected analyze to throw')
+            } catch (error) {
+                expect((error as Error).message).toBe(
+                    "Error: test.clawr:1:25:Unknown identifier 'missingFunction'",
+                )
+            }
         })
 
         it('fails when redeclaring a variable in the same scope', () => {
@@ -1087,7 +1100,7 @@ describe('SemanticAnalyzer', () => {
                     'object Entity { func link(other: ref Entity) -> truthvalue { return true } inheritance: }\nobject Student: Entity { func link(other: const Entity) -> truthvalue { return true } }',
                 ),
             ).toThrow(
-                "test.clawr:2:26:Override 'Student.link(_:)' must match parameter semantics of inherited method",
+                "test.clawr:2:26:Override 'Student.link(other:)' must match parameter semantics of inherited method",
             )
         })
 
@@ -1260,7 +1273,7 @@ describe('SemanticAnalyzer', () => {
 describe('Function body analysis', () => {
     it('produces a SemanticFunction with name and parameters for a simple func', () => {
         const module = analyze(
-            'func identity(x: truthvalue) -> truthvalue { return x }',
+            'func identity(_ x: truthvalue) -> truthvalue { return x }',
         )
         const fn = module.functions.find((f) => f.name === 'identity')
         expect(fn).toMatchObject({
@@ -1284,7 +1297,7 @@ describe('Function body analysis', () => {
 
     it('parameter is in scope inside the function body', () => {
         const module = analyze(
-            'func echo(x: truthvalue) -> truthvalue { return x }',
+            'func echo(_ x: truthvalue) -> truthvalue { return x }',
         )
         const fn = module.functions.find((f) => f.name === 'echo')
         expect(fn?.body).toMatchObject([
@@ -1294,7 +1307,7 @@ describe('Function body analysis', () => {
 
     it('body statements are fully analyzed (var-decl and return)', () => {
         const module = analyze(
-            'func compute(a: truthvalue) -> truthvalue { const b = a\nreturn b }',
+            'func compute(_ a: truthvalue) -> truthvalue { const b = a\nreturn b }',
         )
         const fn = module.functions.find((f) => f.name === 'compute')
         expect(fn?.body).toMatchObject([
@@ -1409,13 +1422,13 @@ describe('Call expression analysis', () => {
     it('rejects function calls with wrong arity', () => {
         expect(() =>
             analyze(
-                'func choose(x: truthvalue, y: truthvalue) -> truthvalue { return x }\nconst z = choose(true)',
+                'func choose(_ x: truthvalue, _ y: truthvalue) -> truthvalue { return x }\nconst z = choose(true)',
             ),
         ).toThrow("Function/method not found 'choose(_:)'")
 
         expect(() =>
             analyze(
-                'func choose(x: truthvalue, y: truthvalue) -> truthvalue { return x }\nconst z = choose(true)',
+                'func choose(_ x: truthvalue, _ y: truthvalue) -> truthvalue { return x }\nconst z = choose(true)',
             ),
         ).toThrow("Did you mean 'choose(_:_:)'?")
     })
@@ -1423,7 +1436,7 @@ describe('Call expression analysis', () => {
     it('rejects function calls with wrong argument types', () => {
         expect(() =>
             analyze(
-                'func choose(x: truthvalue, y: truthvalue) -> truthvalue { return x }\nconst z = choose(1, true)',
+                'func choose(_ x: truthvalue, _ y: truthvalue) -> truthvalue { return x }\nconst z = choose(1, true)',
             ),
         ).toThrow(
             "Argument 1 type mismatch for function 'choose': expected 'truthvalue' but got 'integer'",
@@ -1432,7 +1445,7 @@ describe('Call expression analysis', () => {
 
     it('accepts function calls when argument types match the signature', () => {
         const module = analyze(
-            'func choose(x: truthvalue, y: truthvalue) -> truthvalue { return y }\nconst z = choose(true, ambiguous)',
+            'func choose(_ x: truthvalue, _ y: truthvalue) -> truthvalue { return y }\nconst z = choose(true, ambiguous)',
         )
 
         expect(module.functions[0].body).toMatchObject([

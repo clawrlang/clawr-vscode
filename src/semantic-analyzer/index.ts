@@ -1754,42 +1754,54 @@ export class SemanticAnalyzer {
         const valueSemantics = this.inferExpressionSemantics(stmt.value)
 
         if (explicitType) {
-            this.validateInitializerAgainstType(stmt.value, explicitType)
             this.validateServiceVariableSemantics(
                 stmt.name,
                 explicitType,
                 stmt.semantics,
                 stmt.position,
             )
-            this.declareBinding(
-                stmt.name,
-                {
-                    type: explicitType,
-                    semantics: stmt.semantics,
-                },
-                stmt.position,
-            )
-            const rewrittenValue = this.rewriteExpression(stmt.value)
-
-            this.validateSemanticBoundary(
-                explicitType,
-                stmt.semantics,
-                valueSemantics,
-                rewrittenValue,
-                stmt.position,
-            )
-
-            return {
-                ...stmt,
-                valueSet: { type: explicitType },
-                value: rewrittenValue,
-                ownership: this.buildVariableOwnership(
+            try {
+                this.validateInitializerAgainstType(stmt.value, explicitType)
+                this.declareBinding(
                     stmt.name,
+                    {
+                        type: explicitType,
+                        semantics: stmt.semantics,
+                    },
+                    stmt.position,
+                )
+                const rewrittenValue = this.rewriteExpression(stmt.value)
+
+                this.validateSemanticBoundary(
                     explicitType,
-                    rewrittenValue,
                     stmt.semantics,
                     valueSemantics,
-                ),
+                    rewrittenValue,
+                    stmt.position,
+                )
+
+                return {
+                    ...stmt,
+                    valueSet: { type: explicitType },
+                    value: rewrittenValue,
+                    ownership: this.buildVariableOwnership(
+                        stmt.name,
+                        explicitType,
+                        rewrittenValue,
+                        stmt.semantics,
+                        valueSemantics,
+                    ),
+                }
+            } catch (error) {
+                // Keep explicitly typed declarations in scope to avoid
+                // cascading "unknown identifier" diagnostics in later statements.
+                if (!this.bindings.has(stmt.name)) {
+                    this.bindings.set(stmt.name, {
+                        type: explicitType,
+                        semantics: stmt.semantics,
+                    })
+                }
+                throw error
             }
         }
 
