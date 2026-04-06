@@ -188,7 +188,7 @@ export class FunctionDeclarationParser {
 
         const token = this.stream.peek()
         throw new Error(
-            `Expected parameter name, got ${JSON.stringify(token ?? 'EOF')}`,
+            `${this.stream.file}:${token?.line}:${token?.column}:Expected parameter name, got ${JSON.stringify(token ?? 'EOF')}`,
         )
     }
 

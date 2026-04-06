@@ -55,7 +55,7 @@ export interface SemanticArrayIndexExpression {
 export interface SemanticCallDispatch {
     kind: 'direct' | 'virtual'
     methodName?: string
-    slotName?: string
+    parameters?: SemanticFunctionParameter[]
     ownerType?: string
     receiverType?: string
 }

@@ -19,7 +19,7 @@ export class VariableDeclarationParser {
             !isValidVariableSemantics(semanticsToken.keyword)
         ) {
             throw new Error(
-                'Expected variable declaration keyword (const, mut, ref)',
+                `${this.stream.file}:${semanticsToken?.line}:${semanticsToken?.column}:Expected variable declaration keyword (const, mut, ref)`,
             )
         }
         const semantics = semanticsToken.keyword as 'const' | 'mut' | 'ref'

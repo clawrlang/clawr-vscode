@@ -20,7 +20,7 @@ export class AssignmentParser {
         let target = new ExpressionParser(this.stream).parse()
         // After parseExpression, expect '='
         if (!this.stream.isNext('PUNCTUATION', '=')) {
-            throw new Error('Expected = in assignment')
+            throw new Error(`${this.stream.file}:${firstToken.line}:${firstToken.column}:Expected = in assignment`)
         }
         this.stream.next() // consume '='
         const value = new ExpressionParser(this.stream).parse()

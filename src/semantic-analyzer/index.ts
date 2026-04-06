@@ -13,11 +13,13 @@ import type {
 import type { ASTObjectDeclaration, ASTServiceDeclaration } from '../ast'
 import type {
     SemanticAssignment,
+    SemanticCallDispatch,
     SemanticCopyExpression,
     SemanticDataDeclaration,
     SemanticExpression,
     SemanticFieldAccess,
     SemanticFunction,
+    SemanticFunctionParameter,
     SemanticModule,
     SemanticOwnershipEffects,
     SemanticPrintStatement,
@@ -185,13 +187,7 @@ export class SemanticAnalyzer {
                     this.analyzeFunctionDeclaration(stmt),
                 )
                 if (!analyzed) continue
-                const labels = stmt.parameters.map(
-                    (param) => param.label ?? '_',
-                )
-                userFunctions.push({
-                    ...analyzed,
-                    name: mangleCallableName(stmt.name, labels),
-                })
+                userFunctions.push(analyzed)
                 continue
             }
             if (stmt.kind === 'object-decl') {
@@ -343,18 +339,18 @@ export class SemanticAnalyzer {
     private analyzeStatement(stmt: ASTStatement): SemanticStatement {
         switch (stmt.kind) {
             case 'data-decl':
-                throw new Error('Unexpected data declaration in statement body')
+                throw new Error(`${posStr(stmt.position)}:Unexpected data declaration in statement body`)
             case 'func-decl':
                 throw new Error(
-                    'Unexpected function declaration in statement body',
+                    `${posStr(stmt.position)}:Unexpected function declaration in statement body`,
                 )
             case 'object-decl':
                 throw new Error(
-                    'Unexpected object declaration in statement body',
+                    `${posStr(stmt.position)}:Unexpected object declaration in statement body`,
                 )
             case 'service-decl':
                 throw new Error(
-                    'Unexpected service declaration in statement body',
+                    `${posStr(stmt.position)}:Unexpected service declaration in statement body`,
                 )
             case 'var-decl':
                 return this.analyzeVariableDeclaration(stmt)
@@ -879,7 +875,6 @@ export class SemanticAnalyzer {
                     dispatch: this.buildCallDispatch(
                         signature,
                         expr.callee.right.name,
-                        expr.arguments.map((arg) => arg.label ?? '_'),
                         receiverType,
                     ),
                     position: expr.position,
@@ -1123,6 +1118,7 @@ export class SemanticAnalyzer {
                 parameterSemantics: stmt.parameters.map(
                     (param) => param.semantics ?? 'const',
                 ),
+                parameters: stmt.parameters,
                 effectLevel: 'external',
                 isInheritanceInitializer: false,
             },
@@ -1456,6 +1452,7 @@ export class SemanticAnalyzer {
                         parameterSemantics: callableParams.map(
                             (param) => param.semantics ?? 'const',
                         ),
+                        parameters: callableParams,
                         effectLevel: this.methodEffectLevel(
                             ownerKind,
                             section.kind,
@@ -1506,10 +1503,9 @@ export class SemanticAnalyzer {
                     method.parameters[0]?.name === 'self'
                         ? method.parameters.slice(1)
                         : method.parameters
-                const labels = callableParams.map((param) => param.label ?? '_')
                 methods.push({
                     ...analyzed,
-                    name: `${ownerType}·${mangleCallableName(method.name, labels)}`,
+                    name: `${ownerType}·${method.name}`,
                     parameters: [receiverParameter, ...analyzed.parameters],
                 })
             }
@@ -1580,16 +1576,8 @@ export class SemanticAnalyzer {
     private buildCallDispatch(
         signature: FunctionSignature,
         methodName: string,
-        labels: string[],
         receiverType: string,
-    ): {
-        kind: 'direct' | 'virtual'
-        methodName?: string
-        slotName?: string
-        ownerType?: string
-        receiverType?: string
-    } {
-        const slotName = mangleCallableName(methodName, labels)
+    ): SemanticCallDispatch {
         if (
             signature.ownerKind === 'object' &&
             signature.visibility === 'public'
@@ -1597,7 +1585,7 @@ export class SemanticAnalyzer {
             return {
                 kind: 'virtual',
                 methodName,
-                slotName,
+                parameters: signature.parameters,
                 ownerType: signature.ownerType,
                 receiverType,
             }
@@ -1606,7 +1594,7 @@ export class SemanticAnalyzer {
         return {
             kind: 'direct',
             methodName,
-            slotName,
+            parameters: signature.parameters,
             ownerType: signature.ownerType,
             receiverType,
         }
@@ -2963,6 +2951,7 @@ type FunctionSignature = {
     arity: number
     parameterTypes: string[]
     parameterSemantics: Array<'const' | 'mut' | 'ref'>
+    parameters: SemanticFunctionParameter[]
     effectLevel: EffectLevel
     isInheritanceInitializer: boolean
 }
@@ -3014,12 +3003,4 @@ function buildDidYouMeanSignatureHint(
     if (signatures.length === 0) return ''
     const first = signatures[0]
     return ` Did you mean '${renderFunctionSignature(name, first.labels, ownerType ?? first.ownerType)}'?`
-}
-
-function mangleCallableName(name: string, labels: string[]): string {
-    const suffix = labels
-        .filter((label) => label !== '_')
-        .map((label) => `__${label}`)
-        .join('')
-    return `${name}${suffix}`
 }
