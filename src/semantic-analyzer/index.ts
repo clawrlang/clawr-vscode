@@ -2554,6 +2554,11 @@ export class SemanticAnalyzer {
                         `${posStr(value.position)}:Unknown field '${value.right.name}' on data type '${objectType}'`,
                     )
                 }
+                this.validateFieldVisibility(
+                    objectType,
+                    value.right.name,
+                    value.position,
+                )
                 return fieldInfo.type
             }
             case 'copy': {
@@ -2637,6 +2642,11 @@ export class SemanticAnalyzer {
                     value.right.name,
                 )
                 if (!fieldInfo) return null
+                this.validateFieldVisibility(
+                    objectType,
+                    value.right.name,
+                    value.position,
+                )
                 return fieldInfo.semantics
             }
             case 'copy':
@@ -2901,6 +2911,20 @@ export class SemanticAnalyzer {
     ): VariableBinding | undefined {
         const allFields = this.lookupAllTypeFields(typeName)
         return allFields?.get(fieldName)
+    }
+
+    private validateFieldVisibility(
+        ownerType: string,
+        fieldName: string,
+        position: { file?: string; line: number; column: number },
+    ): void {
+        const ownerKind = this.lookupTypeKind(ownerType)
+        if (ownerKind !== 'object' && ownerKind !== 'service') return
+        if (this.currentOwnerType === ownerType) return
+
+        throw new Error(
+            `${posStr(position)}:Field '${ownerType}.${fieldName}' is private and only accessible inside '${ownerType}'`,
+        )
     }
 }
 

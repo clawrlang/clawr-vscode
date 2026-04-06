@@ -641,6 +641,26 @@ describe('SemanticAnalyzer', () => {
                 "test.clawr:5:1:Cannot mutate field through const variable 'p'",
             )
         })
+
+        it('rejects object field access outside declaring type', () => {
+            expect(() =>
+                analyze(
+                    'object Object {\n  data:\n    field: integer\n}\nconst anObject: Object = { field: 42 }\nprint anObject.field',
+                ),
+            ).toThrow(
+                "Field 'Object.field' is private and only accessible inside 'Object'",
+            )
+        })
+
+        it('rejects service field access outside declaring type', () => {
+            expect(() =>
+                analyze(
+                    'service Service {\n  data:\n    field: integer\n}\nref aService: Service = { field: 42 }\nprint aService.field',
+                ),
+            ).toThrow(
+                "Field 'Service.field' is private and only accessible inside 'Service'",
+            )
+        })
     })
 
     describe('ownership effects', () => {
