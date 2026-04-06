@@ -2,6 +2,7 @@ import { TokenStream } from '../lexer'
 import { Parser } from '../parser'
 import type {
     ASTDataDeclaration,
+    ASTFunctionDeclaration,
     ASTObjectDeclaration,
     ASTProgram,
     ASTServiceDeclaration,
@@ -45,6 +46,7 @@ export async function collectImportedDeclarationsForDiagnostics(
         const publicSymbols = new Set<string>()
         const helperSymbols = new Set<string>()
         const exportedData = new Map<string, ASTDataDeclaration>()
+        const exportedFunctions = new Map<string, ASTFunctionDeclaration>()
         const exportedObjects = new Map<string, ASTObjectDeclaration>()
         const exportedServices = new Map<string, ASTServiceDeclaration>()
 
@@ -66,6 +68,8 @@ export async function collectImportedDeclarationsForDiagnostics(
 
             if (stmt.kind === 'data-decl') {
                 exportedData.set(stmt.name, stmt)
+            } else if (stmt.kind === 'func-decl') {
+                exportedFunctions.set(stmt.name, stmt)
             } else if (stmt.kind === 'object-decl') {
                 exportedObjects.set(stmt.name, stmt)
             } else if (stmt.kind === 'service-decl') {
@@ -101,6 +105,17 @@ export async function collectImportedDeclarationsForDiagnostics(
                 continue
             }
 
+            const exportedFunctionDecl = exportedFunctions.get(item.name)
+            if (exportedFunctionDecl) {
+                importedDeclarations.push(
+                    createImportedFunctionDeclaration(
+                        exportedFunctionDecl,
+                        localName,
+                    ),
+                )
+                continue
+            }
+
             const exportedObjectDecl = exportedObjects.get(item.name)
             if (exportedObjectDecl) {
                 importedDeclarations.push({
@@ -123,4 +138,23 @@ export async function collectImportedDeclarationsForDiagnostics(
     }
 
     return importedDeclarations
+}
+
+function createImportedFunctionDeclaration(
+    declaration: ASTFunctionDeclaration,
+    localName: string,
+): ASTFunctionDeclaration {
+    return {
+        kind: 'func-decl',
+        name: localName,
+        visibility: 'helper',
+        parameters: declaration.parameters.map((param) => ({ ...param })),
+        returnType: declaration.returnType,
+        returnSemantics: declaration.returnSemantics,
+        body: {
+            kind: 'block',
+            statements: [],
+        },
+        position: declaration.position,
+    }
 }

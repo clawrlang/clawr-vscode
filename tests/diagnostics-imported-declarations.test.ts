@@ -68,6 +68,64 @@ describe('Diagnostics imported declarations', () => {
         })
     })
 
+    it('preloads imported function declarations with signatures', async () => {
+        const root = mkTemp()
+        const main = path.join(root, 'main.clawr')
+        const mod = path.join(root, 'mod.clawr')
+
+        fs.writeFileSync(
+            main,
+            'import makeObject from "./mod"\nconst x = makeObject(1)',
+        )
+        fs.writeFileSync(mod, 'func makeObject(x: integer) -> integer => x')
+
+        const mainProgram = parseFile(main)
+        const declarations = await collectImportedDeclarationsForDiagnostics(
+            mainProgram,
+            main,
+            readUtf8,
+        )
+
+        expect(declarations).toMatchObject([
+            {
+                kind: 'func-decl',
+                name: 'makeObject',
+                visibility: 'helper',
+                parameters: [{ name: 'x', type: 'integer' }],
+                returnType: 'integer',
+            },
+        ])
+    })
+
+    it('applies alias to imported function declarations', async () => {
+        const root = mkTemp()
+        const main = path.join(root, 'main.clawr')
+        const mod = path.join(root, 'mod.clawr')
+
+        fs.writeFileSync(
+            main,
+            'import makeObject as make from "./mod"\nconst x = make(1)',
+        )
+        fs.writeFileSync(mod, 'func makeObject(x: integer) -> integer => x')
+
+        const mainProgram = parseFile(main)
+        const declarations = await collectImportedDeclarationsForDiagnostics(
+            mainProgram,
+            main,
+            readUtf8,
+        )
+
+        expect(declarations).toMatchObject([
+            {
+                kind: 'func-decl',
+                name: 'make',
+                visibility: 'helper',
+                parameters: [{ name: 'x', type: 'integer' }],
+                returnType: 'integer',
+            },
+        ])
+    })
+
     it('reports helper-only imported symbol at import item position', async () => {
         const root = mkTemp()
         const main = path.join(root, 'main.clawr')
