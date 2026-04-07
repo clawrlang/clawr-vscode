@@ -481,7 +481,20 @@ export function activate(context: vscode.ExtensionContext): void {
             },
         },
     )
-    context.subscriptions.push(definitionProvider, referenceProvider)
+    const completionProvider = vscode.languages.registerCompletionItemProvider(
+        'clawr',
+        {
+            async provideCompletionItems(document, position) {
+                return provideClawrCompletions(document, position)
+            },
+        },
+        '.',
+    )
+    context.subscriptions.push(
+        definitionProvider,
+        referenceProvider,
+        completionProvider,
+    )
 
     let diagnosticsDisposable: vscode.Disposable | undefined
     const updateDiagnosticsRegistration = (): void => {
@@ -782,12 +795,298 @@ async function provideClawrDefinition(
     return null
 }
 
+async function provideClawrCompletions(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+): Promise<vscode.CompletionItem[]> {
+    const source = document.getText()
+    const program = parseProgram(source, document.uri.fsPath)
+    if (!program) return []
+
+    const importedPrelude = await collectImportedDeclarationsForDiagnostics(
+        program,
+        path.resolve(document.uri.fsPath),
+        (filePath) => readWorkspaceFileText(filePath, document),
+    ).catch(() => [])
+
+    const combinedStatements: ASTStatement[] = [
+        ...importedPrelude,
+        ...program.body,
+    ]
+
+    const lineText = document.lineAt(position.line).text
+    const linePrefix = lineText.slice(0, position.character)
+    const memberContext = /([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*[A-Za-z_0-9]*$/.exec(
+        linePrefix,
+    )
+
+    if (memberContext) {
+        const receiver = memberContext[1]
+        const typeByName = collectSimpleTypeHints(combinedStatements)
+        const receiverType = typeByName.get(receiver)
+        if (!receiverType) return []
+        return buildMemberCompletionItems(combinedStatements, receiverType)
+    }
+
+    const completionMap = new Map<string, vscode.CompletionItem>()
+    const add = (item: vscode.CompletionItem): void => {
+        if (!completionMap.has(item.label.toString())) {
+            completionMap.set(item.label.toString(), item)
+        }
+    }
+
+    const keywords = [
+        'import',
+        'from',
+        'as',
+        'const',
+        'mut',
+        'ref',
+        'func',
+        'return',
+        'if',
+        'else',
+        'while',
+        'for',
+        'in',
+        'break',
+        'continue',
+        'when',
+        'print',
+        'data',
+        'object',
+        'service',
+        'helper',
+    ]
+
+    for (const keyword of keywords) {
+        add(
+            new vscode.CompletionItem(
+                keyword,
+                vscode.CompletionItemKind.Keyword,
+            ),
+        )
+    }
+
+    for (const stmt of combinedStatements) {
+        if (stmt.kind === 'func-decl') {
+            const item = new vscode.CompletionItem(
+                stmt.name,
+                vscode.CompletionItemKind.Function,
+            )
+            item.detail = 'function'
+            add(item)
+        }
+        if (stmt.kind === 'data-decl') {
+            const item = new vscode.CompletionItem(
+                stmt.name,
+                vscode.CompletionItemKind.Struct,
+            )
+            item.detail = 'data type'
+            add(item)
+        }
+        if (stmt.kind === 'object-decl' || stmt.kind === 'service-decl') {
+            const item = new vscode.CompletionItem(
+                stmt.name,
+                vscode.CompletionItemKind.Class,
+            )
+            item.detail =
+                stmt.kind === 'object-decl' ? 'object type' : 'service type'
+            add(item)
+        }
+        if (stmt.kind === 'var-decl') {
+            const item = new vscode.CompletionItem(
+                stmt.name,
+                vscode.CompletionItemKind.Variable,
+            )
+            item.detail = stmt.valueSet?.type
+            add(item)
+        }
+    }
+
+    for (const imp of program.imports) {
+        for (const imported of imp.items) {
+            const label = imported.alias ?? imported.name
+            add(
+                new vscode.CompletionItem(
+                    label,
+                    vscode.CompletionItemKind.Reference,
+                ),
+            )
+        }
+    }
+
+    for (const localName of collectSimpleLocalNamesBeforePosition(
+        source,
+        position,
+    )) {
+        add(
+            new vscode.CompletionItem(
+                localName,
+                vscode.CompletionItemKind.Variable,
+            ),
+        )
+    }
+
+    return [...completionMap.values()]
+}
+
 function parseProgram(source: string, filePath: string): ASTProgram | null {
     try {
         return new Parser(new TokenStream(source, filePath)).parse()
     } catch {
         return null
     }
+}
+
+function collectSimpleTypeHints(
+    statements: ASTStatement[],
+): Map<string, string> {
+    const result = new Map<string, string>()
+
+    const walkStatement = (stmt: ASTStatement): void => {
+        if (stmt.kind === 'var-decl' && stmt.valueSet?.type) {
+            result.set(stmt.name, stmt.valueSet.type)
+        }
+
+        if (stmt.kind === 'func-decl') {
+            for (const param of stmt.parameters) {
+                result.set(param.name, param.type)
+            }
+
+            if (stmt.body.kind === 'block') {
+                for (const nested of stmt.body.statements) {
+                    walkStatement(nested)
+                }
+            }
+        }
+
+        if (stmt.kind === 'if') {
+            for (const nested of stmt.thenBranch) walkStatement(nested)
+            for (const nested of stmt.elseBranch ?? []) walkStatement(nested)
+        }
+
+        if (stmt.kind === 'while') {
+            for (const nested of stmt.body) walkStatement(nested)
+        }
+
+        if (stmt.kind === 'for-in') {
+            for (const nested of stmt.body) walkStatement(nested)
+        }
+    }
+
+    for (const stmt of statements) {
+        walkStatement(stmt)
+    }
+
+    return result
+}
+
+function buildMemberCompletionItems(
+    statements: ASTStatement[],
+    receiverType: string,
+): vscode.CompletionItem[] {
+    const items: vscode.CompletionItem[] = []
+
+    for (const stmt of statements) {
+        if (stmt.kind === 'data-decl' && stmt.name === receiverType) {
+            for (const field of stmt.fields) {
+                const item = new vscode.CompletionItem(
+                    field.name,
+                    vscode.CompletionItemKind.Field,
+                )
+                item.detail = field.type
+                items.push(item)
+            }
+            continue
+        }
+
+        if (
+            (stmt.kind === 'object-decl' || stmt.kind === 'service-decl') &&
+            stmt.name === receiverType
+        ) {
+            for (const section of stmt.sections) {
+                if (section.kind === 'data') {
+                    for (const field of section.fields) {
+                        const item = new vscode.CompletionItem(
+                            field.name,
+                            vscode.CompletionItemKind.Field,
+                        )
+                        item.detail = field.type
+                        items.push(item)
+                    }
+                }
+
+                if (
+                    section.kind === 'methods' ||
+                    section.kind === 'mutating' ||
+                    section.kind === 'inheritance'
+                ) {
+                    for (const method of section.items) {
+                        const item = new vscode.CompletionItem(
+                            method.name,
+                            vscode.CompletionItemKind.Method,
+                        )
+                        const signature = method.parameters
+                            .map(
+                                (param) =>
+                                    `${param.label ?? '_'}: ${param.type}`,
+                            )
+                            .join(', ')
+                        item.detail = `(${signature})${method.returnType ? ` -> ${method.returnType}` : ''}`
+                        items.push(item)
+                    }
+                }
+            }
+        }
+    }
+
+    const deduped = new Map<string, vscode.CompletionItem>()
+    for (const item of items) {
+        if (!deduped.has(item.label.toString())) {
+            deduped.set(item.label.toString(), item)
+        }
+    }
+
+    return [...deduped.values()]
+}
+
+function collectSimpleLocalNamesBeforePosition(
+    source: string,
+    position: vscode.Position,
+): string[] {
+    const lines = source.split(/\r?\n/)
+    const head = lines.slice(0, position.line)
+    const current = lines[position.line] ?? ''
+    head.push(current.slice(0, position.character))
+    const visibleSource = head.join('\n')
+
+    const names = new Set<string>()
+    const addMatches = (regex: RegExp): void => {
+        for (const match of visibleSource.matchAll(regex)) {
+            if (match[1]) names.add(match[1])
+        }
+    }
+
+    addMatches(/\b(?:const|mut|ref)\s+([A-Za-z_][A-Za-z0-9_]*)/g)
+    addMatches(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b/g)
+
+    for (const match of visibleSource.matchAll(
+        /\bfunc\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)/g,
+    )) {
+        const params = match[1]
+        for (const part of params.split(',')) {
+            const trimmed = part.trim()
+            if (!trimmed) continue
+            const paramMatch =
+                /^(?:[A-Za-z_][A-Za-z0-9_]*\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(
+                    trimmed,
+                )
+            if (paramMatch?.[1]) names.add(paramMatch[1])
+        }
+    }
+
+    return [...names.values()]
 }
 
 function findTopLevelDeclaration(
